@@ -4,11 +4,11 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 
+[English](#english) | [Русский](#русский)
+
 **Active Learning SDK** is a low-boilerplate, stateful Python orchestrator for text classification. It glues together your ML models, smart sampling algorithms (Uncertainty out of the box; extensible for Diversity/Bandits), and human-in-the-loop annotation interfaces (like **Label Studio**).
 
 Stop writing fragile plumbing code to move JSONs back and forth. Plug in your dataset, pass your model, choose a sampling configuration, and let the SDK decide what a human should label next to maximize model quality under a fixed annotation budget.
-
-[English](#english) | [Русский](#русский)
 
 ---
 
@@ -20,7 +20,16 @@ The SDK handles the entire Active Learning loop: selecting informative samples, 
 
 ```python
 import pandas as pd
-from active_learning_sdk import ActiveLearningProject
+from active_learning_sdk import (
+    ActiveLearningProject,
+    AnnotationPolicy,
+    CacheConfig,
+    FingerprintConfig,
+    LabelBackendConfig,
+    LabelSchema,
+    PrelabelConfig,
+    SchedulerConfig,
+)
 from active_learning_sdk.adapters import HFSequenceClassifierAdapter
 
 # 1) Initialize a stateful project (crash-safe; resumable; idempotent rounds)
@@ -29,45 +38,46 @@ project = ActiveLearningProject("sentiment_analysis", workdir="./runs/sentiment"
 # 2) Configure the pipeline
 project.configure(
     dataset=pd.read_csv("unlabeled_data.csv"),  # expects 'sample_id' and 'text' columns
-    label_schema={"task": "text_classification", "labels": ["positive", "negative"]},
+    label_schema=LabelSchema(task="text_classification", labels=["positive", "negative"]),
 
     # Wrap your custom model (e.g., HuggingFace, Scikit-Learn)
     model=HFSequenceClassifierAdapter(model=my_model, tokenizer=my_tokenizer),
 
     # Choose how to select the next samples (Entropy, Margin, Least Confidence, Random)
-    scheduler_config={"name": "entropy"},
+    scheduler_config=SchedulerConfig(mode="single", strategy="entropy"),
 
     # Connect to your annotation UI
-    label_backend_config={
-        "mode": "external",
-        "url": "http://localhost:8080",
-        "api_token": "YOUR_LABEL_STUDIO_TOKEN",
-        # optionally: "project_id": 12
-    },
+    label_backend_config=LabelBackendConfig(
+        backend="label_studio",
+        mode="external",
+        url="http://localhost:8080",
+        api_token="YOUR_LABEL_STUDIO_TOKEN",
+        # optionally: project_id=12,
+    ),
 
     # Multi-annotator resolution & "don't wait forever" guarantees
-    annotation_policy={
-        "mode": "latest",               # MVP default (majority/consensus planned)
-        "min_votes": 1,
-        "timeout_seconds": 86400,       # 24h
-        "on_timeout": "needs_review",   # or "accept_latest" / "raise" (implementation-defined)
-    },
+    annotation_policy=AnnotationPolicy(
+        mode="latest",              # MVP default (majority/consensus planned)
+        min_votes=1,
+        timeout_seconds=86400,      # 24h
+        on_timeout="needs_review",  # or "accept_latest" / "raise" (implementation-defined)
+    ),
 
     # Data integrity (prevents accidental dataset swap between runs)
-    fingerprint_config={"mode": "fast"},  # "strict" planned / optional
+    fingerprint_config=FingerprintConfig(mode="fast"),  # "strict" planned / optional
 
     # Cache predictions to save compute (and embeddings if supported later)
-    cache_config={"enable": True, "persist": True},
+    cache_config=CacheConfig(enable=True, persist=True),
 
     # Optional: push model suggestions into Label Studio tasks (prelabeling)
-    prelabel_config={"enable": True},
+    prelabel_config=PrelabelConfig(enable=True),
 )
 
 # 3) Run the loop (blocks until the requested batch is labeled, then retrains)
 project.run(budget=1000, batch_size=50)
 
 # 4) Generate a metrics report
-project.generate_report("./runs/sentiment/report.html")
+project.generate_report("report.html")  # saved under workdir
 
 > Non-blocking integration is supported via `project.run_step()` (intended for notebooks/services) so you can drive the state machine step-by-step.
 
@@ -160,6 +170,19 @@ The standard round is:
 
 `Select Samples (Model + Strategy) → Push Tasks (Backend API) → Wait (Human) → Pull Annotations (Backend API) → Resolve Labels (Policy) → Train & Evaluate (Model) → Checkpoint State`
 
+### Code map (where to look)
+
+* `src/active_learning_sdk/project.py` — user-facing facade (`ActiveLearningProject`)
+* `src/active_learning_sdk/engine.py` — state machine, selection context, scheduler glue
+* `src/active_learning_sdk/configs.py` — config dataclasses
+* `src/active_learning_sdk/types.py` — enums and core data structures
+* `src/active_learning_sdk/state/` — state store + locking
+* `src/active_learning_sdk/dataset/` — providers + fingerprinting
+* `src/active_learning_sdk/strategies/` — built-in strategies
+* `src/active_learning_sdk/backends/` — labeling backends (Label Studio scaffold)
+* `src/active_learning_sdk/adapters/` — model adapter protocols/implementations
+* `src/active_learning_sdk/cache.py` / `src/active_learning_sdk/annotation.py` — cache + annotation aggregation
+
 ### Optional: PlantUML source (for `docs/architecture.puml`)
 
 
@@ -213,7 +236,16 @@ SDK управляет циклом: выбирает информативные
 
 ```python
 import pandas as pd
-from active_learning_sdk import ActiveLearningProject
+from active_learning_sdk import (
+    ActiveLearningProject,
+    AnnotationPolicy,
+    CacheConfig,
+    FingerprintConfig,
+    LabelBackendConfig,
+    LabelSchema,
+    PrelabelConfig,
+    SchedulerConfig,
+)
 from active_learning_sdk.adapters import HFSequenceClassifierAdapter
 
 # 1) Инициализируем проект (сохраняет состояние на диск, защищен от падений)
@@ -222,44 +254,45 @@ project = ActiveLearningProject("sentiment_analysis", workdir="./runs/sentiment"
 # 2) Настраиваем пайплайн
 project.configure(
     dataset=pd.read_csv("unlabeled_data.csv"),  # ожидаются колонки 'sample_id' и 'text'
-    label_schema={"task": "text_classification", "labels": ["positive", "negative"]},
+    label_schema=LabelSchema(task="text_classification", labels=["positive", "negative"]),
 
     # Обертка для вашей модели (например, HuggingFace или Scikit-Learn)
     model=HFSequenceClassifierAdapter(model=my_model, tokenizer=my_tokenizer),
 
     # Как выбирать примеры для разметки (Entropy, Margin, Least Confidence, Random)
-    scheduler_config={"name": "entropy"},
+    scheduler_config=SchedulerConfig(mode="single", strategy="entropy"),
 
     # Подключение к UI для разметки
-    label_backend_config={
-        "mode": "external",
-        "url": "http://localhost:8080",
-        "api_token": "ВАШ_ТОКЕН_LABEL_STUDIO",
-    },
+    label_backend_config=LabelBackendConfig(
+        backend="label_studio",
+        mode="external",
+        url="http://localhost:8080",
+        api_token="ВАШ_ТОКЕН_LABEL_STUDIO",
+    ),
 
     # Политика агрегации аннотаций + защита от вечного ожидания
-    annotation_policy={
-        "mode": "latest",               # дефолт MVP (majority/consensus — позже)
-        "min_votes": 1,
-        "timeout_seconds": 86400,       # 24ч
-        "on_timeout": "needs_review",
-    },
+    annotation_policy=AnnotationPolicy(
+        mode="latest",              # дефолт MVP (majority/consensus — позже)
+        min_votes=1,
+        timeout_seconds=86400,      # 24ч
+        on_timeout="needs_review",
+    ),
 
     # Защита от подмены/перемешивания датасета между перезапусками
-    fingerprint_config={"mode": "fast"},
+    fingerprint_config=FingerprintConfig(mode="fast"),
 
     # Кеширование предиктов (и эмбеддингов при наличии) для экономии вычислений
-    cache_config={"enable": True, "persist": True},
+    cache_config=CacheConfig(enable=True, persist=True),
 
     # Опционально: prelabeling (подсказки модели в задачах разметки)
-    prelabel_config={"enable": True},
+    prelabel_config=PrelabelConfig(enable=True),
 )
 
 # 3) Запуск цикла (скрипт ждет разметки батча, затем обучает модель)
 project.run(budget=1000, batch_size=50)
 
 # 4) Генерация HTML отчета с метриками
-project.generate_report("./runs/sentiment/report.html")
+project.generate_report("report.html")  # сохраняется в workdir
 ```
 
 > Для интеграции в сервис/ноутбук предусмотрен `project.run_step()` — пошаговое выполнение по сохраненному состоянию.
@@ -332,6 +365,19 @@ docker run -d --name label-studio \
 Типичный раунд:
 
 `Выбор примеров (Модель + Стратегия) → Отправка задач (API) → Ожидание (Человек) → Получение аннотаций (API) → Аггрегация меток (Policy) → Обучение/Валидация (Модель) → Сохранение состояния`
+
+### Code map (где смотреть)
+
+* `src/active_learning_sdk/project.py` — фасад для пользователя (`ActiveLearningProject`)
+* `src/active_learning_sdk/engine.py` — state machine, selection context, scheduler
+* `src/active_learning_sdk/configs.py` — dataclass-конфиги
+* `src/active_learning_sdk/types.py` — enum'ы и структуры данных
+* `src/active_learning_sdk/state/` — state store + locking
+* `src/active_learning_sdk/dataset/` — providers + fingerprinting
+* `src/active_learning_sdk/strategies/` — стратегии отбора
+* `src/active_learning_sdk/backends/` — backend'и разметки (Label Studio scaffold)
+* `src/active_learning_sdk/adapters/` — адаптеры моделей
+* `src/active_learning_sdk/cache.py` / `src/active_learning_sdk/annotation.py` — cache + агрегация аннотаций
 
 ## 🔧 Troubleshooting (частые проблемы)
 

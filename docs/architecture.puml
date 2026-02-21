@@ -1,0 +1,77 @@
+@startuml
+' Active Learning SDK — README Diagram (clean, minimal, ordered)
+left to right direction
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam roundcorner 10
+skinparam linetype ortho
+skinparam ArrowColor #333333
+skinparam DefaultFontName Arial
+skinparam DefaultFontSize 12
+
+package "User Space" as USER {
+  [Your Code\n(dataset + config)] as UC
+  [Model Adapter\npredict_proba / fit / evaluate\n(+ optional embed)] as MA
+  UC -[hidden]-> MA  ' keep Model Adapter close to SDK Core
+}
+
+package "SDK Core" as CORE {
+  [ActiveLearningProject\n(public API)] as P
+  [AL Engine\n(orchestrates the loop)] as E
+  [Scheduler\n(sampling strategy)] as S
+  [Annotation Resolver\n(annotation_policy)] as R
+  [State & Cache\n(state + memoization)] as SC
+
+  ' enforce a clean left→right spine inside the core
+  P -[hidden]-> E
+  E -[hidden]-> S
+  S -[hidden]-> R
+  R -[hidden]-> SC
+}
+
+package "Labeling Backend" as BACK {
+  [Label Studio\n(or other UI)] as LB
+}
+
+' enforce global left→right ordering of domains
+USER -[hidden]-> CORE
+CORE -[hidden]-> BACK
+
+' ---------------------------
+' 0) One clean entry (no init spaghetti)
+' ---------------------------
+UC --> P : 0) configure(data, model,\npolicies)
+P  --> E : run() / run_step()
+
+' ---------------------------
+' 1) Select (smart sampling + caching)
+' ---------------------------
+E --> S  : 1) select batch
+S --> MA : 1a) predict_proba()\n(+ embed)
+S --> SC : 1b) store/reuse cached\nmodel outputs
+
+' ---------------------------
+' 2–3) Labeling (single logical interface)
+' ---------------------------
+E --> LB : 2) send batch\nfor labeling
+LB --> E : 3) wait & fetch labels
+
+' ---------------------------
+' 4) Resolve (policy)
+' ---------------------------
+E --> R  : 4) resolve labels
+R --> SC : 4a) update labeled\n/ needs_review
+
+' ---------------------------
+' 5–7) Train, eval, checkpoint
+' ---------------------------
+E --> MA : 5) fit()
+E --> MA : 6) evaluate()
+E --> SC : 7) checkpoint\n(state + metrics)
+
+note right of E
+Loop repeats until
+budget / stop criteria is met.
+end note
+
+@enduml
