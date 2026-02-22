@@ -94,8 +94,6 @@ pip install active-learning-sdk
 Depending on your stack, install optional extras:
 
 ```bash
-# For Label Studio integration
-pip install "active-learning-sdk[labelstudio]"
 
 # For HuggingFace Transformers support
 pip install "active-learning-sdk[transformers]"
@@ -308,8 +306,6 @@ pip install active-learning-sdk
 Установка с опциональными зависимостями:
 
 ```bash
-# Для работы с Label Studio
-pip install "active-learning-sdk[labelstudio]"
 
 # Для работы с HuggingFace Transformers
 pip install "active-learning-sdk[transformers]"
