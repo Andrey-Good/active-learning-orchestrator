@@ -10,8 +10,8 @@ new ad-hoc dict formats.
 
 import enum
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, List, Optional, Protocol
+import numpy as np
 
 class SampleStatus(str, enum.Enum):
     """Lifecycle status of a sample inside the project."""
@@ -88,6 +88,18 @@ class DataSample:
     meta: Dict[str, Any] = field(default_factory=dict)
     group_id: Optional[str] = None
 
+class VectorStore(Protocol):
+    def add(self, embeddings: np.ndarray, ids: List[str]) -> None:
+        """Must be able to save vectors."""
+        ...
+    def search(self, query: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+        """Must be able to search for similar texts."""
+        ...
+
+class InferenceRunner(Protocol):
+    def run_inference(self, pool_texts: List[str], batch_size: int = 64) -> np.ndarray:
+        """Must be able to accept texts and return probabilities (how confident it is in each class)."""
+        ...
 
 @dataclass(frozen=True)
 class AnnotationRecord:
@@ -198,3 +210,18 @@ class MetricRecord:
     step: str
     created_at: float
     metrics: Dict[str, float]
+
+@dataclass
+class StoppingResult:
+    should_stop: bool
+    confidence_level: float
+
+class StoppingCriterion(Protocol):
+    def check_stop(self, current_metrics: Dict, history: List[Dict]) -> StoppingResult:
+        """Any recovery algorithm must be able to make a verdict."""
+        ...
+
+class Calibrator(Protocol):
+    def calibrate(self, raw_logits: np.ndarray) -> np.ndarray:
+        """Makes the neural network's probabilities fair."""
+        ...
