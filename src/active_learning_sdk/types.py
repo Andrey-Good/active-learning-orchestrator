@@ -14,12 +14,59 @@ from typing import Any, Dict, List, Optional, Protocol
 import numpy as np
 
 class SampleStatus(str, enum.Enum):
-    """Lifecycle status of a sample inside the project."""
+    """Lifecycle status of a sample inside the project.
+
+    The SDK keeps the original MVP values for backward compatibility and adds the
+    PRD lifecycle values used by the Phase 1 state model. The PRD flow is:
+
+        UNLABELED -> SCORED -> PENDING -> SENT -> LABELED -> IN_TRAINING
+    """
 
     UNLABELED = "unlabeled"
+    SCORED = "scored"
+    PENDING = "pending"
+    SENT = "sent"
     LABELED = "labeled"
+    IN_TRAINING = "in_training"
     NEEDS_REVIEW = "needs_review"
     INVALID = "invalid"
+
+    @classmethod
+    def selectable_values(cls) -> set[str]:
+        """Statuses that may enter a new selection round."""
+        return {cls.UNLABELED.value, cls.SCORED.value}
+
+    @classmethod
+    def training_ready_values(cls) -> set[str]:
+        """Statuses that have labels and may be used for training/evaluation."""
+        return {cls.LABELED.value, cls.IN_TRAINING.value}
+
+    @classmethod
+    def terminal_values(cls) -> set[str]:
+        """Statuses that should not re-enter selection without manual reset."""
+        return {cls.IN_TRAINING.value, cls.NEEDS_REVIEW.value, cls.INVALID.value}
+
+
+PRD_SAMPLE_LIFECYCLE: tuple[SampleStatus, ...] = (
+    SampleStatus.UNLABELED,
+    SampleStatus.SCORED,
+    SampleStatus.PENDING,
+    SampleStatus.SENT,
+    SampleStatus.LABELED,
+    SampleStatus.IN_TRAINING,
+)
+
+PRD_LIFECYCLE_ALIASES: dict[str, SampleStatus] = {
+    "new_unseen": SampleStatus.UNLABELED,
+    "unlabeled": SampleStatus.UNLABELED,
+    "scored": SampleStatus.SCORED,
+    "pending": SampleStatus.PENDING,
+    "sent": SampleStatus.SENT,
+    "labeled": SampleStatus.LABELED,
+    "in_training": SampleStatus.IN_TRAINING,
+    "needs_review": SampleStatus.NEEDS_REVIEW,
+    "invalid": SampleStatus.INVALID,
+}
 
 
 class RoundStatus(str, enum.Enum):

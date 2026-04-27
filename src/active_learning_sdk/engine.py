@@ -412,6 +412,7 @@ class StrategyScheduler:
         return list(arms)[0]
 
 
+@dataclass(frozen=True)
 class StepResult:
     """
     Result of executing a single step via run_step().
@@ -602,7 +603,19 @@ class ActiveLearningEngine:
             self._lock.acquire()
 
         # Load existing state if present.
-        if self._state_path.exists():
+        if state_store is not None:
+            try:
+                self._state = self._state_store.load()
+                self._validate_loaded_state_basic()
+            except StateCorruptedError as error:
+                # A fresh custom store (for example a new SQLite database) may not
+                # have a saved ProjectState yet. Treat only that case as empty;
+                # real corruption should still fail loudly.
+                message = str(error)
+                if "No project state found" not in message and "does not exist" not in message:
+                    raise
+                self._state = self._new_state()
+        elif self._state_path.exists():
             self._state = self._state_store.load()
             self._validate_loaded_state_basic()
         else:
@@ -1002,17 +1015,20 @@ class ActiveLearningEngine:
         """
         self._ensure_state_loaded()
         assert self._state is not None
-        labeled = sum(1 for s in self._state.sample_status.values() if s == SampleStatus.LABELED.value)
-        unlabeled = sum(1 for s in self._state.sample_status.values() if s == SampleStatus.UNLABELED.value)
-        needs_review = sum(1 for s in self._state.sample_status.values() if s == SampleStatus.NEEDS_REVIEW.value)
-        invalid = sum(1 for s in self._state.sample_status.values() if s == SampleStatus.INVALID.value)
+        counts = {status.value: 0 for status in SampleStatus}
+        for status_value in self._state.sample_status.values():
+            counts[status_value] = counts.get(status_value, 0) + 1
+        counts["training_ready"] = sum(
+            1 for status_value in self._state.sample_status.values()
+            if status_value in SampleStatus.training_ready_values()
+        )
 
         last_round = self._state.rounds[-1] if self._state.rounds else None
         last_metrics = self._state.metrics_history[-1].metrics if self._state.metrics_history else {}
 
         return {
             "project_name": self._state.project_name,
-            "counts": {"labeled": labeled, "unlabeled": unlabeled, "needs_review": needs_review, "invalid": invalid},
+            "counts": counts,
             "active_round": dataclass_to_dict(last_round) if last_round else None,
             "last_metrics": dict(last_metrics),
             "state_version": self._state.state_version,
@@ -1122,7 +1138,7 @@ class ActiveLearningEngine:
         labeled_items = [
             {"sample_id": sid, "label": self._state.sample_labels.get(sid)}
             for sid, st in self._state.sample_status.items()
-            if st == SampleStatus.LABELED.value
+            if st in SampleStatus.training_ready_values()
         ]
 
         if format == "jsonl":
@@ -1169,6 +1185,8 @@ class ActiveLearningEngine:
         def match(status: str) -> bool:
             if which == "all":
                 return True
+            if which == SampleStatus.LABELED.value:
+                return status in SampleStatus.training_ready_values()
             return status == which
 
         selected_ids = [sid for sid, st in self._state.sample_status.items() if match(st)]
@@ -1416,7 +1434,7 @@ class ActiveLearningEngine:
 
     def _should_stop(self, criteria: StopCriteria) -> bool:
         assert self._state is not None
-        labeled = sum(1 for s in self._state.sample_status.values() if s == SampleStatus.LABELED.value)
+        labeled = sum(1 for s in self._state.sample_status.values() if s in SampleStatus.training_ready_values())
         if criteria.max_labeled is not None and labeled >= criteria.max_labeled:
             return True
         if criteria.max_rounds is not None and len(self._state.rounds) >= criteria.max_rounds:
@@ -1516,7 +1534,7 @@ class ActiveLearningEngine:
         if round_state.selected_sample_ids and round_state.status != RoundStatus.SELECTING:
             return
 
-        pool_ids = [sid for sid, st in self._state.sample_status.items() if st == SampleStatus.UNLABELED.value]
+        pool_ids = [sid for sid, st in self._state.sample_status.items() if st in SampleStatus.selectable_values()]
         if not pool_ids:
             # No more unlabeled data; stop gracefully.
             round_state.status = RoundStatus.DONE
@@ -1526,7 +1544,7 @@ class ActiveLearningEngine:
             raise StopCriteriaReached("No unlabeled samples left.")
 
         last_metrics = self._state.metrics_history[-1].metrics if self._state.metrics_history else {}
-        labeled_ids = [sid for sid, st in self._state.sample_status.items() if st == SampleStatus.LABELED.value]
+        labeled_ids = [sid for sid, st in self._state.sample_status.items() if st in SampleStatus.training_ready_values()]
 
         context = SelectionContext(
             provider=self._provider,
@@ -1544,6 +1562,8 @@ class ActiveLearningEngine:
 
         round_state.selected_sample_ids = selected
         round_state.scheduler_snapshot = snapshot
+        for sample_id in selected:
+            self._state.sample_status[sample_id] = SampleStatus.PENDING.value
         round_state.status = RoundStatus.SELECTED
         round_state.updated_at = time.time()
         self._touch_state()
@@ -1565,7 +1585,9 @@ class ActiveLearningEngine:
         assert self._label_schema is not None
 
         if round_state.task_ids:
-            # Already pushed (idempotent).
+            # Already pushed (idempotent). Keep selected samples in the PRD SENT state.
+            for sample_id in round_state.task_ids.keys():
+                self._state.sample_status[sample_id] = SampleStatus.SENT.value
             if round_state.status != RoundStatus.PUSHED:
                 round_state.status = RoundStatus.PUSHED
                 round_state.updated_at = time.time()
@@ -1588,6 +1610,8 @@ class ActiveLearningEngine:
 
         res = self._label_backend.push_round(round_state.round_id, samples, prelabels=prelabels)
         round_state.task_ids = dict(res.task_ids)
+        for sample_id in round_state.task_ids.keys():
+            self._state.sample_status[sample_id] = SampleStatus.SENT.value
 
         round_state.status = RoundStatus.PUSHED
         round_state.updated_at = time.time()
@@ -1673,8 +1697,8 @@ class ActiveLearningEngine:
         train_ids = self._state.splits.get("train", [])
         val_ids = self._state.splits.get("val", [])
 
-        labeled_train = [sid for sid in train_ids if self._state.sample_status.get(sid) == SampleStatus.LABELED.value]
-        labeled_val = [sid for sid in val_ids if self._state.sample_status.get(sid) == SampleStatus.LABELED.value]
+        labeled_train = [sid for sid in train_ids if self._state.sample_status.get(sid) in SampleStatus.training_ready_values()]
+        labeled_val = [sid for sid in val_ids if self._state.sample_status.get(sid) in SampleStatus.training_ready_values()]
 
         if not labeled_train:
             raise ActiveLearningError("No labeled training samples available. Cannot train.")
@@ -1713,6 +1737,10 @@ class ActiveLearningEngine:
         # - If model_id is unknown, you may want to clear caches here to avoid stale reuse.
         if not callable(getattr(self._model, "get_model_id", None)):
             self.clear_cache(kind="all")
+
+        for sample_id in round_state.resolved.keys():
+            if self._state.sample_status.get(sample_id) == SampleStatus.LABELED.value:
+                self._state.sample_status[sample_id] = SampleStatus.IN_TRAINING.value
 
         round_state.status = RoundStatus.TRAINED
         round_state.updated_at = time.time()

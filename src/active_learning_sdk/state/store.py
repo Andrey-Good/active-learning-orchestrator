@@ -13,12 +13,14 @@ For juniors:
 """
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, Union
+from typing import Any, Dict, List, Optional, Union
 
 from ..exceptions import StateCorruptedError
-from ..types import MetricRecord, RoundStatus
+from ..types import MetricRecord, RoundStatus, SampleStatus
+from .abc_store import ABCStore, StatusLike, normalize_status
 from ..utils import atomic_write_text, dataclass_to_dict
 
 
@@ -326,27 +328,11 @@ def state_from_json_dict(payload: Dict[str, Any]) -> ProjectState:
         raise StateCorruptedError(f"Failed to parse project state: {error}") from error
 
 
-class StateStore(Protocol):
-    """
-    Storage interface for project state.
-
-    If you want to store state in something else (SQLite, database), implement this.
-
-    Attributes:
-        (implementation-specific):
-            Where: concrete stores keep their own connection/paths.
-            What: for example a `state_path` (JSON file) or a DB handle (SQLite).
-            Why: the engine uses the store via methods only, so it can support new backends later.
-    """
-
-    def load(self) -> ProjectState:
-        ...
-
-    def save_atomic(self, state: ProjectState) -> None:
-        ...
+# Backward-compatible name used by `ActiveLearningEngine` and public imports.
+StateStore = ABCStore
 
 
-class JsonFileStateStore:
+class JsonFileStateStore(ABCStore):
     """
     JSON-file based state store with atomic writes.
 
@@ -380,3 +366,48 @@ class JsonFileStateStore:
         """Write the state to disk using atomic replacement."""
         serialized = json.dumps(state_to_json_dict(state), ensure_ascii=False, indent=2)
         atomic_write_text(self.state_path, serialized)
+
+    def begin_transaction(self) -> None:
+        """JSON file storage cannot hold a long-running transaction.
+
+        The method intentionally behaves as a no-op so callers can use the same
+        store interface while receiving a visible warning in development.
+        """
+        warnings.warn(
+            "JsonFileStateStore does not support real transactions; begin_transaction() is a no-op.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    def commit(self) -> None:
+        """No-op transaction commit for JSON storage."""
+        warnings.warn(
+            "JsonFileStateStore does not support real transactions; commit() is a no-op.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    def rollback(self) -> None:
+        """No-op transaction rollback for JSON storage."""
+        warnings.warn(
+            "JsonFileStateStore does not support real transactions; rollback() is a no-op.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    def get_sample_status(self, sample_id: str) -> Optional[str]:
+        """Return the persisted status for one sample, if present."""
+        state = self.load()
+        return state.sample_status.get(sample_id)
+
+    def set_sample_status(self, sample_id: str, status: StatusLike) -> None:
+        """Update one sample status through full-state load/save semantics."""
+        state = self.load()
+        state.sample_status[sample_id] = normalize_status(status)
+        self.save_atomic(state)
+
+    def get_samples_by_status(self, status: StatusLike) -> List[str]:
+        """Return sample IDs that currently have the requested status."""
+        wanted = normalize_status(status)
+        state = self.load()
+        return [sample_id for sample_id, current in state.sample_status.items() if current == wanted]

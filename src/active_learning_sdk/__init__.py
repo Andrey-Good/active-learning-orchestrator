@@ -24,6 +24,7 @@ from .exceptions import (
     StrategyError,
 )
 from .project import ActiveLearningProject
+from .state import ABCStore, JsonFileStateStore, SqliteStateStore
 
 __all__ = [
     "ActiveLearningProject",
@@ -46,4 +47,7 @@ __all__ = [
     "LabelBackendConfig",
     "PrelabelConfig",
     "StopCriteria",
+    "ABCStore",
+    "JsonFileStateStore",
+    "SqliteStateStore",
 ]
