@@ -211,15 +211,9 @@ __marimo__/
 
 # Internal agent orchestration artifacts
 .agents/
-AGENT.md
-AGENTS.md
-CLAUDE.md
 
 # Internal planning docs (sprint assignments, task CSVs)
 docs/planning/
-plans/
-codebase_guides/
-docs/PRD_Phase*.docx
 docs/*AUDIT*.md
 docs/SENIOR_*.md
 docs/WAVE*_REPORT_*.md
