@@ -1,0 +1,66 @@
+{
+  "artifacts": {
+    "full_train_reference_csv": "full_train_reference.csv",
+    "manifest_json": "manifest.json",
+    "metrics_csv": "metrics.csv",
+    "selections_csv": "selections.csv",
+    "stop_policies_csv": "stop_policies.csv",
+    "summary_json": "summary.json",
+    "summary_md": "summary.md",
+    "validation_json": "validation.json"
+  },
+  "budgets": [
+    50,
+    100,
+    200
+  ],
+  "datasets": [
+    "dair_ai_emotion"
+  ],
+  "elapsed_seconds": 40.033334199999445,
+  "initial_seed_size": 16,
+  "max_test_samples": 300,
+  "max_train_samples": 300,
+  "preset": "real_full",
+  "run_id": "20260426-152619",
+  "sdk_gap": "No current SDK gap for public initial-label import: ActiveLearningProject.import_labels(...) imports seed and validation labels through the public facade. This scheduler-level benchmark keeps seed labels in benchmark-owned state so strategy curves can be compared without project state-machine overhead.",
+  "sdk_usage": "Uses active_learning_sdk.engine.StrategyScheduler and SelectionContext for acquisition.",
+  "seeds": [
+    13,
+    21,
+    34
+  ],
+  "stop_policies": [
+    {
+      "metric_name": "macro_f1",
+      "min_budget": 24,
+      "min_delta": 0.001,
+      "name": "macro_f1_plateau_fast",
+      "patience": 1,
+      "policy_type": "plateau"
+    },
+    {
+      "metric_name": "macro_f1",
+      "min_budget": 32,
+      "min_delta": 0.001,
+      "name": "macro_f1_plateau_conservative",
+      "patience": 2,
+      "policy_type": "plateau"
+    },
+    {
+      "metric_name": "accuracy",
+      "min_budget": 32,
+      "min_delta": 0.001,
+      "name": "accuracy_plateau_conservative",
+      "patience": 2,
+      "policy_type": "plateau"
+    }
+  ],
+  "strategies": [
+    "random",
+    "entropy",
+    "adaptive_uncertainty_diversity",
+    "badge",
+    "hybrid_weighted_guarded"
+  ]
+}

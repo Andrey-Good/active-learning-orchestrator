@@ -1,0 +1,64 @@
+{
+  "benchmark_contract": "SDK and reference strategies use the same trained sklearn adapter, pool order, seed, budgets, and SelectionContext predict_proba outputs. Manual probability rows are normalized like SDK uncertainty strategies. Manual tie-breaking is deterministic and intentionally benchmark-local. manual_random remains a stochastic/hash baseline with a different deterministic contract than SDK random and is excluded from formula-equivalence diagnostics.",
+  "budgets": [
+    16,
+    32,
+    48,
+    64,
+    96
+  ],
+  "datasets": [
+    "separable_topics",
+    "rare_class_trap",
+    "grouped_duplicates"
+  ],
+  "elapsed_seconds": 11.777062699999078,
+  "initial_seed_size": 9,
+  "preset": "full",
+  "run_id": "20260425-163618",
+  "runnable_strategies": [
+    "random",
+    "entropy",
+    "margin",
+    "least_confidence",
+    "class_group_balanced_entropy",
+    "mix_interleaved_class_group_random",
+    "manual_entropy",
+    "manual_margin",
+    "manual_least_confidence",
+    "manual_class_group_balanced_entropy",
+    "manual_random"
+  ],
+  "seeds": [
+    13,
+    21,
+    34
+  ],
+  "skipped_strategies": {
+    "modal_entropy": "skipped: modAL is not importable",
+    "modal_margin": "skipped: modAL is not importable",
+    "modal_uncertainty": "skipped: modAL is not importable",
+    "skactiveml_entropy": "skipped: skactiveml is not importable",
+    "skactiveml_least_confidence": "skipped: skactiveml is not importable",
+    "skactiveml_margin": "skipped: skactiveml is not importable"
+  },
+  "strategies": [
+    "random",
+    "entropy",
+    "margin",
+    "least_confidence",
+    "class_group_balanced_entropy",
+    "mix_interleaved_class_group_random",
+    "manual_entropy",
+    "manual_margin",
+    "manual_least_confidence",
+    "manual_class_group_balanced_entropy",
+    "manual_random",
+    "modal_entropy",
+    "modal_margin",
+    "modal_uncertainty",
+    "skactiveml_entropy",
+    "skactiveml_margin",
+    "skactiveml_least_confidence"
+  ]
+}

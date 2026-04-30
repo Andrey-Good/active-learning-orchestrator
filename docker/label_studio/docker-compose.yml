@@ -1,0 +1,62 @@
+services:
+  label-studio:
+    image: heartexlabs/label-studio:1.23.0
+    command:
+      - label-studio
+      - start
+      - --no-browser
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --username
+      - ${LABEL_STUDIO_USERNAME:?LABEL_STUDIO_USERNAME is required}
+      - --password
+      - ${LABEL_STUDIO_PASSWORD:?LABEL_STUDIO_PASSWORD is required}
+      - --user-token
+      - ${LABEL_STUDIO_USER_TOKEN:?LABEL_STUDIO_USER_TOKEN is required}
+    environment:
+      LABEL_STUDIO_DISABLE_SIGNUP_WITHOUT_LINK: "true"
+      JSON_LOG: "1"
+    expose:
+      - "8080"
+    volumes:
+      - ./data:/label-studio/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - |
+          python - <<'PY'
+          import sys
+          import urllib.error
+          import urllib.request
+
+          try:
+              urllib.request.urlopen("http://127.0.0.1:8080/api/projects/", timeout=5)
+          except urllib.error.HTTPError as error:
+              sys.exit(0 if error.code < 500 else 1)
+          except Exception:
+              sys.exit(1)
+          PY
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  proxy:
+    image: nginx:1.27-alpine
+    depends_on:
+      label-studio:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${LABEL_STUDIO_HOST_PORT:-8080}:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -T 5 -O /dev/null http://127.0.0.1:8080/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped

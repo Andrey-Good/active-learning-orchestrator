@@ -9,6 +9,7 @@ from .base import (
     build_label_backend,
 )
 from .label_studio import LabelStudioBackend
+from .simulator import SimulatorLabelBackend
 
 __all__ = [
     "LabelBackend",
@@ -17,5 +18,6 @@ __all__ = [
     "RoundPullResult",
     "build_label_backend",
     "LabelStudioBackend",
+    "SimulatorLabelBackend",
     "LLMLabelBackend",
 ]

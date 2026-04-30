@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 User-facing facade for the Active Learning SDK.
 
@@ -9,8 +7,11 @@ If you are new to this repo, start here.
 `ActiveLearningEngine` (see `src/active_learning_sdk/engine.py`).
 """
 
+from __future__ import annotations
+
+
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Mapping, Optional, Sequence, Union
 
 from .adapters.base import TextClassificationAdapter
 from .backends.base import LabelBackend
@@ -27,7 +28,7 @@ from .configs import (
 )
 from .dataset.provider import DatasetProvider
 from .engine import ActiveLearningEngine, StepResult
-from .state.store import ProjectState, StateStore
+from .state.store import ProjectState, StateStore, clone_project_state
 from .strategies.base import SamplingStrategy
 
 
@@ -90,6 +91,7 @@ class ActiveLearningProject:
         fingerprint_config: FingerprintConfig = FingerprintConfig(),
         split_config: SplitConfig = SplitConfig(),
         prelabel_config: PrelabelConfig = PrelabelConfig(),
+        strategies: Optional[Sequence[SamplingStrategy]] = None,
     ) -> None:
         """
         Configure the project and persist configuration to disk.
@@ -117,6 +119,7 @@ class ActiveLearningProject:
             fingerprint_config=fingerprint_config,
             split_config=split_config,
             prelabel_config=prelabel_config,
+            strategies=strategies,
         )
 
     def attach_runtime(
@@ -125,6 +128,7 @@ class ActiveLearningProject:
         dataset: Union[DatasetProvider, Any, str, Path],
         model: TextClassificationAdapter,
         label_backend: Optional[LabelBackend] = None,
+        strategies: Optional[Sequence[SamplingStrategy]] = None,
     ) -> None:
         """
         Attach runtime objects to an already-configured project.
@@ -133,7 +137,12 @@ class ActiveLearningProject:
         The config is loaded from `state.json`, but live Python objects (dataset/model/backend)
         must be provided again.
         """
-        self._engine.attach_runtime(dataset=dataset, model=model, label_backend=label_backend)
+        self._engine.attach_runtime(
+            dataset=dataset,
+            model=model,
+            label_backend=label_backend,
+            strategies=strategies,
+        )
 
     def register_strategy(self, strategy: SamplingStrategy) -> None:
         """
@@ -142,6 +151,18 @@ class ActiveLearningProject:
         After registration, `SchedulerConfig(strategy=...)` can refer to `strategy.name`.
         """
         self._engine.register_strategy(strategy)
+
+    def import_labels(
+        self,
+        labels: Mapping[str, Any],
+        *,
+        overwrite: bool = False,
+        source: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Import externally known labels without creating backend rounds/tasks.
+        """
+        return self._engine.import_labels(labels, overwrite=overwrite, source=source)
 
     def run(
         self,
@@ -179,8 +200,8 @@ class ActiveLearningProject:
         return self._engine.status()
 
     def get_state(self) -> ProjectState:
-        """Return the full in-memory `ProjectState` object."""
-        return self._engine.get_state()
+        """Return a detached `ProjectState` snapshot."""
+        return clone_project_state(self._engine.get_state())
 
     def list_rounds(self) -> list[Dict[str, Any]]:
         """Return short summaries for all rounds stored in state."""
@@ -192,8 +213,8 @@ class ActiveLearningProject:
     def validate(self) -> Dict[str, Any]:
         return self._engine.validate()
 
-    def generate_report(self, output_path: Union[str, Path] = "report.html") -> None:
-        self._engine.generate_report(output_path=output_path)
+    def generate_report(self, output_path: Union[str, Path] = "report.html") -> Dict[str, Path]:
+        return self._engine.generate_report(output_path=output_path)
 
     def export_labels(self, output_path: Union[str, Path], *, format: str = "jsonl") -> None:
         self._engine.export_labels(output_path=output_path, format=format)

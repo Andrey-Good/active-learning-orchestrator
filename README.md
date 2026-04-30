@@ -1,403 +1,654 @@
-# Active Learning SDK 🧠
+# Active Learning SDK
 
-[![PyPI version](https://img.shields.io/pypi/v/active-learning-sdk.svg)](https://pypi.org/project/active-learning-sdk/)
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![CI](https://github.com/Andrey-Good/active-learning-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/Andrey-Good/active-learning-orchestrator/actions/workflows/ci.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-[English](#english) | [Русский](#русский)
-
-**Active Learning SDK** is a low-boilerplate, stateful Python orchestrator for text classification. It glues together your ML models, smart sampling algorithms (Uncertainty out of the box; extensible for Diversity/Bandits), and human-in-the-loop annotation interfaces (like **Label Studio**).
-
-Stop writing fragile plumbing code to move JSONs back and forth. Plug in your dataset, pass your model, choose a sampling configuration, and let the SDK decide what a human should label next to maximize model quality under a fixed annotation budget.
-
----
+[English](#english) | [Русский](#russian)
 
 <a id="english"></a>
 
-## ⚡ Quickstart
+## English
 
-The SDK handles the entire Active Learning loop: selecting informative samples, pushing them to Label Studio, waiting for human annotation, pulling the results, resolving labels via a policy, and retraining the model — all while saving crash-safe state and avoiding duplicate labeling tasks.
+`active-learning-sdk` is a Python SDK for building resumable active learning loops for text classification. It keeps project state on disk, selects the next samples to label, sends them to a labeling backend, pulls annotations back, retrains your model adapter, and records reproducible reports.
 
-```python
-import pandas as pd
-from active_learning_sdk import (
-    ActiveLearningProject,
-    AnnotationPolicy,
-    CacheConfig,
-    FingerprintConfig,
-    LabelBackendConfig,
-    LabelSchema,
-    PrelabelConfig,
-    SchedulerConfig,
-)
-from active_learning_sdk.adapters import HFSequenceClassifierAdapter
+The project is designed for teams that want active learning as a reliable workflow component rather than a pile of notebook glue code.
 
-# 1) Initialize a stateful project (crash-safe; resumable; idempotent rounds)
-project = ActiveLearningProject("sentiment_analysis", workdir="./runs/sentiment")
+### What It Does
 
-# 2) Configure the pipeline
-project.configure(
-    dataset=pd.read_csv("unlabeled_data.csv"),  # expects 'sample_id' and 'text' columns
-    label_schema=LabelSchema(task="text_classification", labels=["positive", "negative"]),
+- Runs stateful active learning rounds: select, push, wait, pull, train/evaluate, update.
+- Resumes interrupted projects without duplicating labeling tasks.
+- Protects projects with dataset fingerprints and split identity checks.
+- Supports probability, embedding, gradient-embedding, stochastic, committee, hybrid, and mix-style acquisition strategies.
+- Integrates with Label Studio in external and managed Docker modes.
+- Provides a deterministic simulator backend for tests and local smoke runs.
+- Exports labels, dataset splits, reports, audit events, and benchmark evidence.
+- Ships benchmark harnesses for synthetic and capped real-data validation.
 
-    # Wrap your custom model (e.g., HuggingFace, Scikit-Learn)
-    model=HFSequenceClassifierAdapter(model=my_model, tokenizer=my_tokenizer),
+### Current Status
 
-    # Choose how to select the next samples (Entropy, Margin, Least Confidence, Random)
-    scheduler_config=SchedulerConfig(mode="single", strategy="entropy"),
+This is a beta SDK. The core runtime, project state machine, strategy surface, simulator backend, Label Studio contracts, reports, exports, benchmark harness, and packaging checks are covered by tests.
 
-    # Connect to your annotation UI
-    label_backend_config=LabelBackendConfig(
-        backend="label_studio",
-        mode="external",
-        url="http://localhost:8080",
-        api_token="YOUR_LABEL_STUDIO_TOKEN",
-        # optionally: project_id=12,
-    ),
+Known limitations:
 
-    # Multi-annotator resolution & "don't wait forever" guarantees
-    annotation_policy=AnnotationPolicy(
-        mode="latest",              # MVP default (majority/consensus planned)
-        min_votes=1,
-        timeout_seconds=86400,      # 24h
-        on_timeout="needs_review",  # or "accept_latest" / "raise" (implementation-defined)
-    ),
+- The built-in Hugging Face adapter currently implements `predict_proba()` only. Training and evaluation must be supplied by your adapter subclass or custom adapter.
+- LLM labeling backend support is a placeholder, not a production backend.
+- Bandit scheduling is experimental.
+- Benchmark evidence is useful validation evidence, not a universal scientific claim that every strategy beats random on every dataset.
 
-    # Data integrity (prevents accidental dataset swap between runs)
-    fingerprint_config=FingerprintConfig(mode="fast"),  # "strict" planned / optional
+### Installation
 
-    # Cache predictions to save compute (and embeddings if supported later)
-    cache_config=CacheConfig(enable=True, persist=True),
-
-    # Optional: push model suggestions into Label Studio tasks (prelabeling)
-    prelabel_config=PrelabelConfig(enable=True),
-)
-
-# 3) Run the loop (blocks until the requested batch is labeled, then retrains)
-project.run(budget=1000, batch_size=50)
-
-# 4) Generate a metrics report
-project.generate_report("report.html")  # saved under workdir
-
-> Non-blocking integration is supported via `project.run_step()` (intended for notebooks/services) so you can drive the state machine step-by-step.
-
----
-
-## 🚀 Installation
-
-Install the core SDK via pip:
+Core install:
 
 ```bash
 pip install active-learning-sdk
 ```
 
-Depending on your stack, install optional extras:
+Development install from this repository:
 
 ```bash
-
-# For HuggingFace Transformers support
-pip install "active-learning-sdk[transformers]"
+uv sync --dev
 ```
 
----
-
-## 🛠 Features (v0.1.0)
-
-* **Text-First Design:** Optimized for NLP tasks (single-label classification in MVP; multi-label via config is supported as a mode).
-* **Stateful & Crash-Resistant:** Safe to interrupt at any time. Resuming won't create duplicate tasks in the labeling backend.
-* **Bring Your Own Model:** Capability-based interfaces. If your model has `predict_proba()` + `fit()` + `evaluate()`, it works. Built-in adapters planned for Transformers and Scikit-Learn.
-* **Smart Selection Strategies (MVP):** Uncertainty sampling (Entropy, Margin, Least Confidence) and Random selection out of the box.
-* **Data Integrity:** Dataset fingerprinting prevents accidental dataset swap/edits between runs.
-* **Performance:** Prediction caching prevents redundant computation across AL rounds (embeddings caching is supported when the model adapter provides embeddings).
-
----
-
-## 🧩 How it works (in one page)
-
-A project is a directory containing:
-
-* **state** (versioned JSON, atomic writes),
-* **round history** (selected sample IDs, created task IDs, statuses),
-* **caches** (predictions/embeddings keyed by model version),
-* **configuration** (backend, schema, policies, scheduler).
-
-A single Active Learning round follows:
-
-`Select → Push → Wait → Pull → Resolve Labels → Train/Evaluate → Checkpoint`
-
-Key guarantees:
-
-* **Idempotent rounds:** if the process crashes after pushing tasks, on resume it continues from the correct step and will not create duplicates.
-* **Dataset fingerprint:** on resume the SDK validates the dataset fingerprint before doing anything else; mismatch raises an error (no silent mixing of data).
-* **Policy-driven label resolution:** multi-annotator outputs are resolved by `annotation_policy`. In MVP, the default is `mode="latest"` to avoid complex deadlocks.
-
----
-
-## 🏗 Label Studio Setup
-
-The recommended way to use the SDK is to connect it to an externally running Label Studio instance.
-
-Quick start with Docker (detached):
+Optional extras:
 
 ```bash
-docker run -d --name label-studio \
-  -p 8080:8080 \
-  -v "$(pwd)/label_studio_data:/label-studio/data" \
-  heartexlabs/label-studio:latest
+pip install -e ".[sklearn]"
+pip install -e ".[huggingface]"
+pip install -e ".[datasets]"
+pip install -e ".[xxhash]"
+pip install -e ".[benchmarks]"
+pip install -e ".[all]"
 ```
 
-Open `http://localhost:8080`, create an account, go to **Account & Settings**, and copy your **Access Token** to use as `api_token`.
+| Extra | Adds | Use case |
+| --- | --- | --- |
+| `sklearn` | `scikit-learn` | `SklearnTextClassifierAdapter` and local sklearn workflows. |
+| `huggingface` | `transformers`, `torch`, `sentencepiece`, `protobuf` | Hugging Face probability adapter scaffolding. |
+| `datasets` | `datasets`, `pandas` | Hugging Face datasets and DataFrame/CSV/Parquet workflows. |
+| `xxhash` | `xxhash` | Faster dataset fingerprinting. |
+| `benchmarks` | `datasets`, `pandas`, `scikit-learn` | Benchmark harnesses. |
+| `all` | all optional runtime extras | Convenience install for local experimentation. |
 
-> Tip: on Windows PowerShell, replace `"$(pwd)/label_studio_data:..."` with an absolute path.
+## Core Simulator Quickstart
 
----
-
-## 🧠 Architecture
-
-
-![Architecture Diagram](docs/architecture.png)
-
-The SDK is an orchestrator with strict separation of concerns:
-
-* Project state & idempotency (core engine)
-* Selection strategies (scheduler)
-* Labeling backend (Label Studio interface)
-* Model adapter (capability-based)
-
-The standard round is:
-
-`Select Samples (Model + Strategy) → Push Tasks (Backend API) → Wait (Human) → Pull Annotations (Backend API) → Resolve Labels (Policy) → Train & Evaluate (Model) → Checkpoint State`
-
-### Code map (where to look)
-
-* `src/active_learning_sdk/project.py` — user-facing facade (`ActiveLearningProject`)
-* `src/active_learning_sdk/engine.py` — state machine, selection context, scheduler glue
-* `src/active_learning_sdk/configs.py` — config dataclasses
-* `src/active_learning_sdk/types.py` — enums and core data structures
-* `src/active_learning_sdk/state/` — state store + locking
-* `src/active_learning_sdk/dataset/` — providers + fingerprinting
-* `src/active_learning_sdk/strategies/` — built-in strategies
-* `src/active_learning_sdk/backends/` — labeling backends (Label Studio scaffold)
-* `src/active_learning_sdk/adapters/` — model adapter protocols/implementations
-* `src/active_learning_sdk/cache.py` / `src/active_learning_sdk/annotation.py` — cache + annotation aggregation
-
-### Optional: PlantUML source (for `docs/architecture.puml`)
-
-
-
----
-
-## 🔧 Troubleshooting (common issues)
-
-* **`DatasetMismatchError` on resume:** the dataset changed (IDs, schema, content, or file). Restore the original dataset or start a new project directory.
-* **Duplicate tasks appear in Label Studio:** ensure you always resume using the same `workdir` and do not delete state files mid-run. Idempotency relies on stored task mappings.
-* **Label Studio unreachable / auth fails:** verify `url` and `api_token`. Confirm the token is from **Account & Settings**.
-* **Run blocks forever:** check `annotation_policy.timeout_seconds` and `on_timeout`. In MVP the recommended default is to move unresolved items into `needs_review`.
-* **Slow selection rounds:** enable caching and ensure your model adapter provides a stable `get_model_id()` (when available) so caches can invalidate correctly.
-
----
-
-## 🗺 Roadmap (high-level)
-
-* **v0.1.0**: text MVP + Label Studio external backend + idempotent rounds + dataset fingerprint + uncertainty strategies + caching + basic report
-* **v0.2.0**: majority/consensus policies + `needs_review` workflow improvements + embeddings-based strategies (diversity)
-* **v0.3.0**: bandit scheduler + reward normalization + richer analytics
-* **v0.4.0+**: multi-modal data, RAG workflows, LLM labeling backends, plugin hooks, custom selectors
-
----
-
-## 🤝 Contributing & License
-
-This project is licensed under the **Apache License 2.0**. See `LICENSE`.
-
-Pull requests are welcome. Please include tests for:
-
-* crash-after-push resume (no duplicate tasks),
-* dataset fingerprint mismatch behavior,
-* round state transitions and idempotency.
-
----
-
----
-
-<a id="русский"></a>
-
-# Active Learning SDK 🧠
-
-**Active Learning SDK** — это Python-библиотека-оркестратор для автоматизации цикла активного обучения (Active Learning) в задачах классификации текста. Она берет на себя всю грязную работу по интеграции ML-моделей, умного выбора данных (Uncertainty — в MVP; расширяемо до Diversity/Bandits), и интерфейсов разметки (например, **Label Studio**).
-
-Хватит писать хрупкие скрипты для перекладывания JSON-ов. Подключите датасет, передайте модель, выберите конфигурацию выборки — и SDK сам решит, какие тексты нужно дать человеку на разметку, чтобы улучшать качество модели максимально эффективно при ограниченном бюджете.
-
-## ⚡ Быстрый старт
-
-SDK управляет циклом: выбирает информативные примеры, отправляет их в Label Studio, ждет разметки человеком, забирает результаты, агрегирует метки по политике и дообучает модель — сохраняя состояние и не создавая дублей задач при перезапуске.
+This quickstart does not require `pandas`, optional extras, or a live Label Studio service.
 
 ```python
-import pandas as pd
 from active_learning_sdk import (
     ActiveLearningProject,
     AnnotationPolicy,
-    CacheConfig,
-    FingerprintConfig,
     LabelBackendConfig,
     LabelSchema,
-    PrelabelConfig,
     SchedulerConfig,
+    SplitConfig,
+    StopCriteria,
 )
-from active_learning_sdk.adapters import HFSequenceClassifierAdapter
+from active_learning_sdk.backends.simulator import SimulatorLabelBackend
+from active_learning_sdk.types import DataSample
 
-# 1) Инициализируем проект (сохраняет состояние на диск, защищен от падений)
-project = ActiveLearningProject("sentiment_analysis", workdir="./runs/sentiment")
 
-# 2) Настраиваем пайплайн
+class TinyProvider:
+    def __init__(self):
+        self.rows = {
+            "s1": "free trial works",
+            "s2": "invoice failed",
+            "s3": "upgrade account",
+            "s4": "refund request",
+        }
+
+    def iter_sample_ids(self):
+        return iter(self.rows)
+
+    def get_sample(self, sample_id):
+        return DataSample(sample_id=sample_id, data={"text": self.rows[sample_id]})
+
+    def schema(self):
+        return {"sample_id": "str", "text": "str"}
+
+
+class TinyModel:
+    def __init__(self):
+        self.labels = []
+
+    def predict_proba(self, texts, batch_size=32):
+        return [[0.5, 0.5] for _ in texts]
+
+    def fit(self, texts, labels, **kwargs):
+        self.labels = list(labels)
+
+    def evaluate(self, texts, labels):
+        return {"accuracy": 1.0 if labels else 0.0}
+
+    def get_model_id(self):
+        return f"tiny-model-{len(self.labels)}"
+
+
+backend = SimulatorLabelBackend(
+    label_by_sample_id={"s3": "positive", "s4": "negative"}
+)
+
+project = ActiveLearningProject("quickstart", workdir="./runs/quickstart")
 project.configure(
-    dataset=pd.read_csv("unlabeled_data.csv"),  # ожидаются колонки 'sample_id' и 'text'
-    label_schema=LabelSchema(task="text_classification", labels=["positive", "negative"]),
-
-    # Обертка для вашей модели (например, HuggingFace или Scikit-Learn)
-    model=HFSequenceClassifierAdapter(model=my_model, tokenizer=my_tokenizer),
-
-    # Как выбирать примеры для разметки (Entropy, Margin, Least Confidence, Random)
-    scheduler_config=SchedulerConfig(mode="single", strategy="entropy"),
-
-    # Подключение к UI для разметки
-    label_backend_config=LabelBackendConfig(
-        backend="label_studio",
-        mode="external",
-        url="http://localhost:8080",
-        api_token="ВАШ_ТОКЕН_LABEL_STUDIO",
+    dataset=TinyProvider(),
+    model=TinyModel(),
+    label_schema=LabelSchema(
+        task="text_classification",
+        labels=["negative", "positive"],
     ),
-
-    # Политика агрегации аннотаций + защита от вечного ожидания
-    annotation_policy=AnnotationPolicy(
-        mode="latest",              # дефолт MVP (majority/consensus — позже)
-        min_votes=1,
-        timeout_seconds=86400,      # 24ч
-        on_timeout="needs_review",
+    label_backend_config=LabelBackendConfig(backend="simulator"),
+    label_backend=backend,
+    scheduler_config=SchedulerConfig(mode="single", strategy="random"),
+    annotation_policy=AnnotationPolicy(mode="latest", min_votes=1),
+    split_config=SplitConfig(
+        mode="explicit",
+        explicit_splits={
+            "train": ["s1", "s2", "s3", "s4"],
+            "val": [],
+            "test": [],
+        },
     ),
-
-    # Защита от подмены/перемешивания датасета между перезапусками
-    fingerprint_config=FingerprintConfig(mode="fast"),
-
-    # Кеширование предиктов (и эмбеддингов при наличии) для экономии вычислений
-    cache_config=CacheConfig(enable=True, persist=True),
-
-    # Опционально: prelabeling (подсказки модели в задачах разметки)
-    prelabel_config=PrelabelConfig(enable=True),
 )
 
-# 3) Запуск цикла (скрипт ждет разметки батча, затем обучает модель)
-project.run(budget=1000, batch_size=50)
-
-# 4) Генерация HTML отчета с метриками
-project.generate_report("report.html")  # сохраняется в workdir
+project.import_labels({"s1": "positive", "s2": "negative"}, source="seed")
+project.run(
+    batch_size=2,
+    stop_criteria=StopCriteria(max_rounds=1),
+    poll_interval_seconds=0,
+)
+print(project.status()["counts"])
+project.close()
 ```
 
-> Для интеграции в сервис/ноутбук предусмотрен `project.run_step()` — пошаговое выполнение по сохраненному состоянию.
+Expected output:
 
-## 🚀 Установка
+```python
+{"labeled": 4, "unlabeled": 0, "needs_review": 0, "invalid": 0}
+```
 
-Установка базового пакета:
+### Core Concepts
+
+An active learning project combines four pieces:
+
+- Dataset provider: exposes stable `sample_id` values and returns `DataSample` objects.
+- Model adapter: implements `fit()` and `evaluate()`; strategies that use probabilities also require `predict_proba()`.
+- Label schema: defines task type and valid labels.
+- Label backend: receives tasks and returns annotations.
+
+The main facade is `ActiveLearningProject`. It persists state in `workdir`, so a project can be stopped and resumed. If you reopen a project in a new process, call `attach_runtime(...)` to bind the dataset, model, and optional backend instance back to the persisted state.
+
+### Acquisition Strategies
+
+Current strategy names include:
+
+- `random`
+- `entropy`
+- `margin`
+- `least_confidence`
+- `group_diverse_entropy`
+- `class_balanced_entropy`
+- `class_group_balanced_entropy`
+- `coreset_kcenter`
+- `embedding_kmeans_pp`
+- `max_min_embedding`
+- `deduplicate_near_neighbors`
+- `density_weighted_diversity`
+- `badge`
+- `adaptive_uncertainty_diversity`
+- `mc_dropout_entropy`
+- `bald`
+- `variation_ratio`
+- `prediction_variance`
+- `committee_vote_entropy`
+- `committee_kl_divergence`
+- `committee_pairwise_disagreement`
+- `committee_margin`
+
+Scheduler modes:
+
+- `single`: one strategy.
+- `mix`: batch allocation across multiple strategy arms.
+- `mix_interleaved`: interleaved multi-strategy allocation.
+- `hybrid`: score blending, prefilters, rerankers, and guardrails.
+- `custom`: injected user strategy.
+- `bandit`: basic experimental adaptive arm selection.
+
+### Label Studio
+
+#### External Mode
+
+External mode connects to a Label Studio service you run yourself:
+
+```python
+LabelBackendConfig(
+    backend="label_studio",
+    mode="external",
+    url="http://127.0.0.1:8080",
+    api_token="YOUR_LABEL_STUDIO_TOKEN",
+)
+```
+
+Local Docker example:
+
+```bash
+docker run -d --name label-studio -p 8080:8080 heartexlabs/label-studio:1.23.0
+```
+
+#### Managed Docker Mode
+
+Managed Docker mode uses packaged compose assets and requires explicit credentials:
+
+```bash
+export ACTIVE_LEARNING_LABEL_STUDIO_USERNAME="you@example.com"
+export ACTIVE_LEARNING_LABEL_STUDIO_PASSWORD="change-me"
+export ACTIVE_LEARNING_LABEL_STUDIO_TOKEN="change-this-token"
+```
+
+```python
+LabelBackendConfig(
+    backend="label_studio",
+    mode="managed_docker",
+    managed_port=8080,
+    api_token="change-this-token",
+)
+```
+
+See [docker/label_studio/README.md](docker/label_studio/README.md) and [docs/LABEL_STUDIO_LIVE_TESTS.md](docs/LABEL_STUDIO_LIVE_TESTS.md).
+
+### Reports And Exports
+
+The SDK can generate reproducible project artifacts:
+
+- `summary.json`
+- `report.md`
+- `report.html`
+- `manifest.json`
+- label exports in JSONL or CSV
+- dataset split exports in JSONL or CSV
+- audit events and per-round selection snapshots
+
+Typical public methods:
+
+- `run(...)`
+- `run_step(...)`
+- `status()`
+- `validate()`
+- `list_rounds()`
+- `get_round(round_id)`
+- `import_labels(...)`
+- `generate_report(...)`
+- `export_labels(...)`
+- `export_dataset_split(...)`
+- `cache_stats()`
+- `clear_cache(...)`
+
+### Benchmarks
+
+Benchmark entrypoints:
+
+```bash
+uv run python benchmarks/sdk_first_benchmark.py --preset smoke
+uv run python benchmarks/sdk_first_benchmark.py --preset full
+uv run python benchmarks/sdk_first_benchmark.py --preset project_smoke
+uv run python benchmarks/sdk_first_benchmark.py --preset real_medium --seeds 13,21,34 --max-train-samples 800 --max-test-samples 500
+```
+
+Benchmark docs:
+
+- [benchmarks/README.md](benchmarks/README.md)
+- [docs/BENCHMARK_EVIDENCE.md](docs/BENCHMARK_EVIDENCE.md)
+- [benchmarks/results/current_benchmark_report.md](benchmarks/results/current_benchmark_report.md)
+
+Latest local validation in this worktree:
+
+- `uv run pytest -q` -> `623 passed, 1 skipped`
+- `uv run mypy src` -> `Success: no issues found in 38 source files`
+- `uv run ruff check .` -> `All checks passed!`
+- `uv build` -> wheel and source distribution built successfully
+- `uv run --with twine python -m twine check dist/active_learning_sdk-0.1.0.tar.gz dist/active_learning_sdk-0.1.0-py3-none-any.whl` -> both artifacts passed
+
+### Development
+
+```bash
+uv sync --dev
+uv run pytest -q
+uv run ruff check .
+uv run mypy src
+uv build
+```
+
+Community files:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [SECURITY.md](SECURITY.md)
+- [SUPPORT.md](SUPPORT.md)
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- [CHANGELOG.md](CHANGELOG.md)
+
+### License
+
+Apache License 2.0. See [LICENSE](LICENSE).
+
+---
+
+<a id="russian"></a>
+
+## Русский
+
+`active-learning-sdk` — Python SDK для построения возобновляемых циклов активного обучения в задачах текстовой классификации. SDK хранит состояние проекта на диске, выбирает следующие примеры для разметки, отправляет их в backend разметки, забирает аннотации, переобучает ваш model adapter и сохраняет воспроизводимые отчеты.
+
+Проект нужен командам, которые хотят использовать active learning как надежный компонент рабочего процесса, а не как набор хрупких notebook-скриптов.
+
+### Что Умеет SDK
+
+- Запускает stateful active learning раунды: select, push, wait, pull, train/evaluate, update.
+- Возобновляет прерванные проекты без повторного создания задач разметки.
+- Защищает проект через fingerprint датасета и проверку идентичности split-ов.
+- Поддерживает probability, embedding, gradient-embedding, stochastic, committee, hybrid и mix стратегии выбора примеров.
+- Интегрируется с Label Studio в external и managed Docker режимах.
+- Содержит deterministic simulator backend для тестов и локальных smoke-прогонов.
+- Экспортирует labels, dataset splits, reports, audit events и benchmark evidence.
+- Содержит benchmark harness для synthetic и capped real-data проверок.
+
+### Текущий Статус
+
+Это beta SDK. Основной runtime, state machine проекта, стратегии, simulator backend, Label Studio контракты, отчеты, exports, benchmark harness и упаковка покрыты тестами.
+
+Ограничения:
+
+- Встроенный Hugging Face adapter сейчас реализует только `predict_proba()`. `fit()` и `evaluate()` должны быть реализованы в вашем subclass/custom adapter.
+- LLM backend пока placeholder, а не production backend.
+- Bandit scheduler экспериментальный.
+- Benchmark evidence показывает полезную проверку качества, но не является универсальным научным утверждением, что каждая стратегия всегда лучше random на любом датасете.
+
+### Установка
+
+Базовая установка:
 
 ```bash
 pip install active-learning-sdk
 ```
 
-Установка с опциональными зависимостями:
+Локальная разработка из репозитория:
 
 ```bash
-
-# Для работы с HuggingFace Transformers
-pip install "active-learning-sdk[transformers]"
+uv sync --dev
 ```
 
-## 🛠 Возможности (v0.1.0)
-
-* **Text-First:** оптимизировано для NLP, без проброса файловых систем в Docker.
-* **Отказоустойчивость:** процесс можно безопасно прервать. При перезапуске он продолжит работу без дублей задач в Label Studio.
-* **Любые модели:** интерфейс на основе capabilities. Если у модели есть `predict_proba()` + `fit()` + `evaluate()`, она поддерживается.
-* **Умный выбор данных (MVP):** uncertainty (энтропия, margin, least-confidence) + random.
-* **Защита данных:** fingerprint датасета не даст случайно смешать разные файлы/версии данных между перезапусками.
-* **Скорость:** кеширование вероятностей (и эмбеддингов при наличии) предотвращает лишние вычисления на GPU.
-
-## 🧩 Как это работает (коротко)
-
-Проект — это папка, в которой лежат:
-
-* **state** (JSON с атомарной записью),
-* **история раундов** (выбранные sample_id, mapping задач backend’а, статусы),
-* **кеши** (предикты/эмбеддинги),
-* **конфиги** (стратегии, политика аннотаций, backend).
-
-Один раунд:
-
-`Select → Push → Wait → Pull → Resolve Labels → Train/Evaluate → Checkpoint`
-
-Гарантии:
-
-* **Идемпотентность:** если упасть после push, на resume SDK не создаст дубликаты задач.
-* **Fingerprint:** на resume SDK проверит целостность датасета до начала работы.
-* **Политика разметки:** итоговая метка определяется `annotation_policy`. В MVP дефолт — `latest`, чтобы не зависать на консенсусе.
-
-## 🏗 Настройка Label Studio
-
-Рекомендуемый сценарий: Label Studio запускается отдельно, в SDK передается только URL и токен.
-
-Быстрый запуск через Docker:
+Опциональные зависимости:
 
 ```bash
-docker run -d --name label-studio \
-  -p 8080:8080 \
-  -v "$(pwd)/label_studio_data:/label-studio/data" \
-  heartexlabs/label-studio:latest
+pip install -e ".[sklearn]"
+pip install -e ".[huggingface]"
+pip install -e ".[datasets]"
+pip install -e ".[xxhash]"
+pip install -e ".[benchmarks]"
+pip install -e ".[all]"
 ```
 
-После запуска откройте `http://localhost:8080`, создайте аккаунт, перейдите в **Account & Settings** и скопируйте **Access Token**.
+| Extra | Что добавляет | Для чего |
+| --- | --- | --- |
+| `sklearn` | `scikit-learn` | `SklearnTextClassifierAdapter` и локальные sklearn workflows. |
+| `huggingface` | `transformers`, `torch`, `sentencepiece`, `protobuf` | Hugging Face probability adapter scaffold. |
+| `datasets` | `datasets`, `pandas` | Hugging Face datasets и DataFrame/CSV/Parquet workflows. |
+| `xxhash` | `xxhash` | Более быстрый fingerprint датасета. |
+| `benchmarks` | `datasets`, `pandas`, `scikit-learn` | Benchmark harness. |
+| `all` | все optional runtime extras | Удобно для локальных экспериментов. |
 
-## 🧠 Архитектура
+### Быстрый Старт С Simulator Backend
 
-![Architecture Diagram](docs/architecture.png)
+Этот пример не требует pandas, scikit-learn, Hugging Face, Docker или Label Studio.
 
-Типичный раунд:
-
-`Выбор примеров (Модель + Стратегия) → Отправка задач (API) → Ожидание (Человек) → Получение аннотаций (API) → Аггрегация меток (Policy) → Обучение/Валидация (Модель) → Сохранение состояния`
-
-### Code map (где смотреть)
-
-* `src/active_learning_sdk/project.py` — фасад для пользователя (`ActiveLearningProject`)
-* `src/active_learning_sdk/engine.py` — state machine, selection context, scheduler
-* `src/active_learning_sdk/configs.py` — dataclass-конфиги
-* `src/active_learning_sdk/types.py` — enum'ы и структуры данных
-* `src/active_learning_sdk/state/` — state store + locking
-* `src/active_learning_sdk/dataset/` — providers + fingerprinting
-* `src/active_learning_sdk/strategies/` — стратегии отбора
-* `src/active_learning_sdk/backends/` — backend'и разметки (Label Studio scaffold)
-* `src/active_learning_sdk/adapters/` — адаптеры моделей
-* `src/active_learning_sdk/cache.py` / `src/active_learning_sdk/annotation.py` — cache + агрегация аннотаций
-
-## 🔧 Troubleshooting (частые проблемы)
-
-* **`DatasetMismatchError` при resume:** датасет изменился. Верните исходный датасет или создайте новый `workdir`.
-* **Дубликаты задач в Label Studio:** используйте один и тот же `workdir` и не удаляйте state файлы во время работы.
-* **Label Studio недоступен / токен неверный:** проверьте `url` и `api_token` (токен берется в **Account & Settings**).
-* **Скрипт “висит” на ожидании:** настройте `annotation_policy.timeout_seconds` и `on_timeout`.
-* **Медленно работает выбор:** включите кеширование и обеспечьте стабильный `get_model_id()` (когда доступно), чтобы кеши корректно инвалидировались.
-
-## 🗺 Roadmap (крупными мазками)
-
-* **v0.1.0**: текстовый MVP + LS external + idempotency + fingerprint + uncertainty + кеши + отчет
-* **v0.2.0**: majority/consensus + улучшение `needs_review` + embeddings/diversity
-* **v0.3.0**: bandit scheduler + нормализация reward + аналитика
-* **v0.4.0+**: мультимодальность, RAG, разметка через LLM, плагины, кастомные селекторы
-
-## 🤝 Contributing & License
-
-Лицензия: **Apache License 2.0**. См. `LICENSE`.
-
-PR приветствуются. Особенно ценны тесты на:
-
-* resume без дублей задач после падения на шаге push,
-* поведение при несовпадении fingerprint,
-* корректность переходов состояний раунда.
+```python
+from active_learning_sdk import (
+    ActiveLearningProject,
+    AnnotationPolicy,
+    LabelBackendConfig,
+    LabelSchema,
+    SchedulerConfig,
+    SplitConfig,
+    StopCriteria,
+)
+from active_learning_sdk.backends.simulator import SimulatorLabelBackend
+from active_learning_sdk.types import DataSample
 
 
+class TinyProvider:
+    def __init__(self):
+        self.rows = {
+            "s1": "free trial works",
+            "s2": "invoice failed",
+            "s3": "upgrade account",
+            "s4": "refund request",
+        }
+
+    def iter_sample_ids(self):
+        return iter(self.rows)
+
+    def get_sample(self, sample_id):
+        return DataSample(sample_id=sample_id, data={"text": self.rows[sample_id]})
+
+    def schema(self):
+        return {"sample_id": "str", "text": "str"}
+
+
+class TinyModel:
+    def __init__(self):
+        self.labels = []
+
+    def predict_proba(self, texts, batch_size=32):
+        return [[0.5, 0.5] for _ in texts]
+
+    def fit(self, texts, labels, **kwargs):
+        self.labels = list(labels)
+
+    def evaluate(self, texts, labels):
+        return {"accuracy": 1.0 if labels else 0.0}
+
+    def get_model_id(self):
+        return f"tiny-model-{len(self.labels)}"
+
+
+backend = SimulatorLabelBackend(
+    label_by_sample_id={"s3": "positive", "s4": "negative"}
+)
+
+project = ActiveLearningProject("quickstart", workdir="./runs/quickstart")
+project.configure(
+    dataset=TinyProvider(),
+    model=TinyModel(),
+    label_schema=LabelSchema(
+        task="text_classification",
+        labels=["negative", "positive"],
+    ),
+    label_backend_config=LabelBackendConfig(backend="simulator"),
+    label_backend=backend,
+    scheduler_config=SchedulerConfig(mode="single", strategy="random"),
+    annotation_policy=AnnotationPolicy(mode="latest", min_votes=1),
+    split_config=SplitConfig(
+        mode="explicit",
+        explicit_splits={
+            "train": ["s1", "s2", "s3", "s4"],
+            "val": [],
+            "test": [],
+        },
+    ),
+)
+
+project.import_labels({"s1": "positive", "s2": "negative"}, source="seed")
+project.run(
+    batch_size=2,
+    stop_criteria=StopCriteria(max_rounds=1),
+    poll_interval_seconds=0,
+)
+print(project.status()["counts"])
+project.close()
+```
+
+Ожидаемый результат:
+
+```python
+{"labeled": 4, "unlabeled": 0, "needs_review": 0, "invalid": 0}
+```
+
+### Основные Понятия
+
+Active learning проект состоит из четырех частей:
+
+- Dataset provider: выдает стабильные `sample_id` и возвращает `DataSample`.
+- Model adapter: реализует `fit()` и `evaluate()`; стратегии на вероятностях требуют `predict_proba()`.
+- Label schema: описывает тип задачи и допустимые labels.
+- Label backend: получает задачи и возвращает аннотации.
+
+Главная публичная точка входа — `ActiveLearningProject`. Она сохраняет состояние в `workdir`, поэтому проект можно остановить и продолжить. Если вы открываете проект в новом процессе, используйте `attach_runtime(...)`, чтобы снова привязать dataset, model и backend к сохраненному состоянию.
+
+### Стратегии Выбора
+
+Доступные strategy names:
+
+- `random`
+- `entropy`
+- `margin`
+- `least_confidence`
+- `group_diverse_entropy`
+- `class_balanced_entropy`
+- `class_group_balanced_entropy`
+- `coreset_kcenter`
+- `embedding_kmeans_pp`
+- `max_min_embedding`
+- `deduplicate_near_neighbors`
+- `density_weighted_diversity`
+- `badge`
+- `adaptive_uncertainty_diversity`
+- `mc_dropout_entropy`
+- `bald`
+- `variation_ratio`
+- `prediction_variance`
+- `committee_vote_entropy`
+- `committee_kl_divergence`
+- `committee_pairwise_disagreement`
+- `committee_margin`
+
+Режимы scheduler:
+
+- `single`: одна стратегия.
+- `mix`: batch allocation между несколькими strategy arms.
+- `mix_interleaved`: interleaved multi-strategy allocation.
+- `hybrid`: score blending, prefilters, rerankers и guardrails.
+- `custom`: пользовательская стратегия.
+- `bandit`: базовый экспериментальный adaptive arm selection.
+
+### Label Studio
+
+External Label Studio:
+
+```python
+LabelBackendConfig(
+    backend="label_studio",
+    mode="external",
+    url="http://127.0.0.1:8080",
+    api_token="YOUR_LABEL_STUDIO_TOKEN",
+)
+```
+
+Локальный Docker:
+
+```bash
+docker run -d --name label-studio -p 8080:8080 heartexlabs/label-studio:1.23.0
+```
+
+Managed Docker mode использует packaged compose assets и явные credentials:
+
+```bash
+export ACTIVE_LEARNING_LABEL_STUDIO_USERNAME="you@example.com"
+export ACTIVE_LEARNING_LABEL_STUDIO_PASSWORD="change-me"
+export ACTIVE_LEARNING_LABEL_STUDIO_TOKEN="change-this-token"
+```
+
+```python
+LabelBackendConfig(
+    backend="label_studio",
+    mode="managed_docker",
+    managed_port=8080,
+    api_token="change-this-token",
+)
+```
+
+Подробнее:
+
+- [docker/label_studio/README.md](docker/label_studio/README.md)
+- [docs/LABEL_STUDIO_LIVE_TESTS.md](docs/LABEL_STUDIO_LIVE_TESTS.md)
+
+### Reports И Exports
+
+SDK умеет генерировать воспроизводимые artifacts:
+
+- `summary.json`
+- `report.md`
+- `report.html`
+- `manifest.json`
+- label exports в JSONL или CSV
+- dataset split exports в JSONL или CSV
+- audit events и per-round selection snapshots
+
+Полезные публичные методы:
+
+- `run(...)`
+- `run_step(...)`
+- `status()`
+- `validate()`
+- `list_rounds()`
+- `get_round(round_id)`
+- `import_labels(...)`
+- `generate_report(...)`
+- `export_labels(...)`
+- `export_dataset_split(...)`
+- `cache_stats()`
+- `clear_cache(...)`
+
+### Benchmarks
+
+Основные команды:
+
+```bash
+uv run python benchmarks/sdk_first_benchmark.py --preset smoke
+uv run python benchmarks/sdk_first_benchmark.py --preset full
+uv run python benchmarks/sdk_first_benchmark.py --preset project_smoke
+uv run python benchmarks/sdk_first_benchmark.py --preset real_medium --seeds 13,21,34 --max-train-samples 800 --max-test-samples 500
+```
+
+Документация:
+
+- [benchmarks/README.md](benchmarks/README.md)
+- [docs/BENCHMARK_EVIDENCE.md](docs/BENCHMARK_EVIDENCE.md)
+- [benchmarks/results/current_benchmark_report.md](benchmarks/results/current_benchmark_report.md)
+
+Последняя локальная проверка в этом worktree:
+
+- `uv run pytest -q` -> `623 passed, 1 skipped`
+- `uv run mypy src` -> `Success: no issues found in 38 source files`
+- `uv run ruff check .` -> `All checks passed!`
+- `uv build` -> wheel и source distribution собраны успешно
+- `uv run --with twine python -m twine check dist/active_learning_sdk-0.1.0.tar.gz dist/active_learning_sdk-0.1.0-py3-none-any.whl` -> оба artifact прошли проверку
+
+### Разработка
+
+```bash
+uv sync --dev
+uv run pytest -q
+uv run ruff check .
+uv run mypy src
+uv build
+```
+
+Файлы сообщества:
+
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [SECURITY.md](SECURITY.md)
+- [SUPPORT.md](SUPPORT.md)
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- [CHANGELOG.md](CHANGELOG.md)
+
+### Лицензия
+
+Apache License 2.0. См. [LICENSE](LICENSE).

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Small utilities shared by multiple modules.
 
@@ -8,10 +6,16 @@ For juniors:
 - Put "generic helpers" here, but avoid dumping large business logic into utils.
 """
 
+from __future__ import annotations
+
+
 import dataclasses
 import enum
+import hashlib
+import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 
@@ -36,6 +40,19 @@ def dataclass_to_dict(obj: Any) -> Any:
     return obj
 
 
+def _replace_with_retry(source: Path, target: Path, *, attempts: int = 8, initial_delay_seconds: float = 0.01) -> None:
+    delay = initial_delay_seconds
+    for attempt in range(attempts):
+        try:
+            os.replace(str(source), str(target))
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2.0, 0.25)
+
+
 def atomic_write_text(path: Union[str, Path], payload: str, encoding: str = "utf-8") -> None:
     """
     Write text to a file atomically.
@@ -51,4 +68,26 @@ def atomic_write_text(path: Union[str, Path], payload: str, encoding: str = "utf
         tmp.flush()
         os.fsync(tmp.fileno())
         tmp_path = Path(tmp.name)
-    os.replace(str(tmp_path), str(target))
+    try:
+        _replace_with_retry(tmp_path, target)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+
+
+def sha256_file(path: Union[str, Path]) -> str:
+    """Return the SHA-256 hex digest for a file's current bytes."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_json(value: Any) -> str:
+    """Return a deterministic SHA-256 digest for a strict JSON-compatible value."""
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

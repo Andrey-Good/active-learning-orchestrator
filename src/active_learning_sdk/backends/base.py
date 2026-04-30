@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Labeling backend interfaces and small helpers.
 
@@ -10,6 +8,9 @@ For juniors:
 - If you want the SDK to work with a real labeling tool, you implement a backend.
 - The engine already knows when to call push/poll/pull; you only implement the I/O.
 """
+
+from __future__ import annotations
+
 
 import time
 from dataclasses import dataclass, field
@@ -151,6 +152,7 @@ class LLMLabelBackend:
     def __init__(self, label_fn: Callable[[DataSample], AnnotationRecord]) -> None:
         self._label_fn = label_fn
         self._ready = False
+        self._samples_by_round: Dict[str, Dict[str, DataSample]] = {}
 
     def ensure_ready(self, label_schema: LabelSchema) -> Dict[str, Any]:
         label_schema.validate()
@@ -163,10 +165,25 @@ class LLMLabelBackend:
         samples: Sequence[DataSample],
         prelabels: Optional[Dict[str, Any]] = None,
     ) -> RoundPushResult:
+        self._samples_by_round[round_id] = {sample.sample_id: sample for sample in samples}
         task_ids = {sample.sample_id: f"llm:{round_id}:{sample.sample_id}" for sample in samples}
         return RoundPushResult(task_ids=task_ids, backend_round_ref={"round_id": round_id})
 
+    def restore_round_samples(
+        self,
+        round_id: str,
+        samples: Sequence[DataSample],
+        task_ids: Optional[Mapping[str, str]] = None,
+    ) -> None:
+        restored = {sample.sample_id: sample for sample in samples}
+        if task_ids is not None:
+            for sample_id in restored:
+                self._validate_task_binding(round_id, sample_id, task_ids.get(sample_id, ""))
+        self._samples_by_round[round_id] = restored
+
     def poll_round(self, round_id: str, task_ids: Mapping[str, str], policy: AnnotationPolicy) -> RoundProgress:
+        for sample_id, task_id in task_ids.items():
+            self._validate_task_binding(round_id, sample_id, task_id)
         return RoundProgress(total=len(task_ids), done=len(task_ids), ready_sample_ids=list(task_ids.keys()))
 
     def pull_round(self, round_id: str, task_ids: Mapping[str, str]) -> RoundPullResult:
@@ -174,8 +191,15 @@ class LLMLabelBackend:
             raise LabelBackendError("LLMLabelBackend is not ready. Call ensure_ready() first.")
         annotations: Dict[str, List[AnnotationRecord]] = {}
         now = time.time()
-        for sample_id in task_ids.keys():
-            annotation = self._label_fn(DataSample(sample_id=sample_id, data={"text": ""}))
+        pushed_samples = self._samples_by_round.get(round_id, {})
+        for sample_id, task_id in task_ids.items():
+            self._validate_task_binding(round_id, sample_id, task_id)
+            sample = pushed_samples.get(sample_id)
+            if sample is None:
+                raise LabelBackendError(
+                    f"LLMLabelBackend has no pushed sample payload for round_id={round_id!r}, sample_id={sample_id!r}."
+                )
+            annotation = self._label_fn(sample)
             if annotation.created_at <= 0:
                 annotation = AnnotationRecord(
                     annotator_id=annotation.annotator_id,
@@ -186,20 +210,39 @@ class LLMLabelBackend:
             annotations[sample_id] = [annotation]
         return RoundPullResult(annotations=annotations)
 
+    def _validate_task_binding(self, round_id: str, sample_id: str, task_id: str) -> None:
+        expected = f"llm:{round_id}:{sample_id}"
+        if str(task_id) != expected:
+            raise LabelBackendError(
+                f"LLM task id {task_id!r} does not belong to sample_id={sample_id!r} in round_id={round_id!r}."
+            )
+
     def close(self) -> None:
         self._ready = False
+        self._samples_by_round.clear()
 
 
 def build_label_backend(config: LabelBackendConfig) -> LabelBackend:
     """
     Factory that builds a backend from config.
 
-    For now this supports only Label Studio (scaffold).
+    Supported built-ins:
+    - Label Studio
+    - simulator (deterministic test backend)
     """
     if config.backend == "label_studio":
         from .label_studio import LabelStudioBackend
 
         return LabelStudioBackend(config)
+    if config.backend == "simulator":
+        from .simulator import SimulatorLabelBackend
+
+        return SimulatorLabelBackend()
     if config.backend == "llm":
         raise ConfigurationError("LLM backend requires a label function; instantiate LLMLabelBackend directly.")
+    if config.backend == "custom":
+        raise ConfigurationError(
+            "Custom label backend configs require injecting/providing a label_backend instance; "
+            "build_label_backend() only constructs built-in backends."
+        )
     raise ConfigurationError(f"Unsupported backend: {config.backend!r}")

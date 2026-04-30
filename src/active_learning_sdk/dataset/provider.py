@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Dataset access layer.
 
@@ -13,17 +11,91 @@ Instead it talks to a simple `DatasetProvider` interface.
 If you need to support a new dataset source, implement `DatasetProvider`.
 """
 
+from __future__ import annotations
+
+
 import json
+import math
+from collections.abc import Mapping as MappingABC
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Protocol, Sequence, runtime_checkable
 
 from ..exceptions import ConfigurationError
 from ..types import DataSample
 
-try:
-    import pandas as _pd  # type: ignore
-except Exception:
-    _pd = None  # type: ignore
+
+def _pandas() -> Any:
+    try:
+        import pandas as pd  # type: ignore
+    except Exception as error:
+        raise ConfigurationError("pandas is not installed. Install pandas or provide a custom DatasetProvider.") from error
+    return pd
+
+
+def _is_missing_scalar(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        pd = _pandas()
+    except ConfigurationError:
+        return False
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        return False
+    if isinstance(missing, bool):
+        return missing
+    return False
+
+
+def _json_safe_value(value: Any) -> Any:
+    if _is_missing_scalar(value):
+        return None
+    if isinstance(value, MappingABC):
+        return {str(key): _json_safe_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(item) for item in value]
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if hasattr(value, "item"):
+        try:
+            return _json_safe_value(value.item())
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    try:
+        json.dumps(value, allow_nan=False)
+        return value
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _validate_dataframe_sample_id(value: Any, *, row_index: int, column: str) -> str:
+    if _is_missing_scalar(value):
+        raise ConfigurationError(f"DataFrame sample_id column {column!r} contains missing value at row {row_index}.")
+    if not isinstance(value, str):
+        raise ConfigurationError(
+            f"DataFrame sample_id column {column!r} must contain string values; "
+            f"row {row_index} has {type(value).__name__}."
+        )
+    if value == "":
+        raise ConfigurationError(f"DataFrame sample_id column {column!r} contains empty string at row {row_index}.")
+    return value
+
+
+def _validate_dataframe_text(value: Any, *, sample_id: str, column: str) -> str:
+    if _is_missing_scalar(value):
+        raise ConfigurationError(f"DataFrame text column {column!r} contains missing value for sample_id={sample_id!r}.")
+    if not isinstance(value, str):
+        raise ConfigurationError(
+            f"DataFrame text column {column!r} must contain string values; "
+            f"sample_id={sample_id!r} has {type(value).__name__}."
+        )
+    return value
 
 
 @runtime_checkable
@@ -52,9 +124,6 @@ class DatasetProvider(Protocol):
     def get_sample(self, sample_id: str) -> DataSample:
         ...
 
-    def get_samples(self, sample_ids: Sequence[str]) -> List[DataSample]:
-        return [self.get_sample(sample_id) for sample_id in sample_ids]
-
     def schema(self) -> Dict[str, str]:
         return {"sample_id": "str", "text": "str"}
 
@@ -70,6 +139,8 @@ class DataFrameDatasetProvider:
     Optional columns:
     - meta (dict-like or JSON string)
     - group_id
+    - any additional columns are exposed in `DataSample.data` so public
+      contracts such as `SplitConfig(mode="column")` can use them.
 
     Attributes:
         _df (Any):
@@ -91,46 +162,51 @@ class DataFrameDatasetProvider:
     """
 
     def __init__(self, df: Any, text_column: str = "text", id_column: str = "sample_id") -> None:
-        if _pd is None:
-            raise ConfigurationError("pandas is not installed. Install pandas or provide a custom DatasetProvider.")
         if id_column not in df.columns or text_column not in df.columns:
             raise ConfigurationError(f"DataFrame must contain columns: {id_column!r}, {text_column!r}")
         self._df = df
         self._text_column = text_column
         self._id_column = id_column
         self._index: Dict[str, int] = {}
-        for row_index, sample_id in enumerate(df[id_column].astype(str).tolist()):
+        self._sample_ids: List[str] = []
+        for row_index, value in enumerate(df[id_column].tolist()):
+            sample_id = _validate_dataframe_sample_id(value, row_index=row_index, column=id_column)
             if sample_id in self._index:
                 raise ConfigurationError(f"Duplicate sample_id in dataset: {sample_id!r}")
             self._index[sample_id] = row_index
+            self._sample_ids.append(sample_id)
 
     @classmethod
     def from_path(cls, path: Path) -> "DataFrameDatasetProvider":
         """Load CSV/Parquet via pandas and wrap as a provider."""
-        if _pd is None:
-            raise ConfigurationError("Reading dataset from path requires pandas.")
+        pd = _pandas()
         if not path.exists():
             raise ConfigurationError(f"Dataset path does not exist: {path}")
         if path.suffix.lower() == ".csv":
-            df = _pd.read_csv(path)
+            df = pd.read_csv(path, dtype={"sample_id": "string"})
             return cls(df)
         if path.suffix.lower() in {".parquet", ".pq"}:
-            df = _pd.read_parquet(path)
+            df = pd.read_parquet(path)
             return cls(df)
         raise ConfigurationError(f"Unsupported dataset file type: {path.suffix}")
 
     def iter_sample_ids(self) -> Iterator[str]:
-        for sample_id in self._df[self._id_column].astype(str).tolist():
+        for sample_id in self._sample_ids:
             yield sample_id
 
     def get_sample(self, sample_id: str) -> DataSample:
         try:
-            row_index = self._index[str(sample_id)]
+            row_index = self._index[sample_id]
         except KeyError as error:
             raise KeyError(f"Unknown sample_id={sample_id!r}") from error
 
         row = self._df.iloc[row_index]
-        data = {"text": str(row[self._text_column])}
+        data = {"text": _validate_dataframe_text(row[self._text_column], sample_id=sample_id, column=self._text_column)}
+        reserved_columns = {self._id_column, "meta", "group_id"}
+        for column in self._df.columns:
+            if column in reserved_columns or column == self._text_column:
+                continue
+            data[str(column)] = _json_safe_value(row[column])
         meta: Dict[str, Any] = {}
         if "meta" in self._df.columns:
             meta_value = row["meta"]
@@ -139,13 +215,18 @@ class DataFrameDatasetProvider:
                     meta = json.loads(meta_value)
                 except Exception:
                     meta = {"meta": meta_value}
-            elif isinstance(meta_value, dict):
-                meta = meta_value
+            elif isinstance(meta_value, MappingABC):
+                meta = dict(meta_value)
             else:
                 meta = {"meta": meta_value}
+            meta = _json_safe_value(meta)
 
-        group_id = str(row["group_id"]) if "group_id" in self._df.columns and row["group_id"] is not None else None
-        return DataSample(sample_id=str(sample_id), data=data, meta=meta, group_id=group_id)
+        group_value = row["group_id"] if "group_id" in self._df.columns else None
+        group_id = None if _is_missing_scalar(group_value) else str(_json_safe_value(group_value))
+        return DataSample(sample_id=sample_id, data=data, meta=meta, group_id=group_id)
+
+    def get_samples(self, sample_ids: Sequence[str]) -> List[DataSample]:
+        return [self.get_sample(sample_id) for sample_id in sample_ids]
 
     def schema(self) -> Dict[str, str]:
         return {"sample_id": "str", "text": "str"}

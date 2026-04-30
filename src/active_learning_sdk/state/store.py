@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Persistent project state (state.json).
 
@@ -12,14 +10,23 @@ For juniors:
 - Most idempotency guarantees come from fields stored here (for example task_ids).
 """
 
+from __future__ import annotations
+
+
 import json
+import math
+import numbers
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, Union
+from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, Union
 
 from ..exceptions import StateCorruptedError
-from ..types import MetricRecord, RoundStatus
+from ..types import MetricRecord, RoundStatus, SampleStatus
 from ..utils import atomic_write_text, dataclass_to_dict
+
+
+CURRENT_STATE_VERSION = 1
+SUPPORTED_STATE_VERSIONS = frozenset({CURRENT_STATE_VERSION})
 
 
 @dataclass
@@ -131,6 +138,14 @@ class RoundState:
             Where: set in SELECT step.
             What: dict like {"mode": "single", "strategy": "entropy"}.
             Why: reproducibility and debugging.
+        backend_ref (Dict[str, Any]):
+            Bounded, sanitized backend reference from successful PUSH.
+        last_poll_progress (Dict[str, Any]):
+            Bounded, sanitized summary of the latest backend poll.
+        pull_summary (Dict[str, Any]):
+            Bounded, sanitized summary of the latest backend pull payload.
+        backend_error_history (List[Dict[str, Any]]):
+            Bounded, sanitized backend operation errors for this round.
         error (Optional[str]):
             Error string if round failed.
             Where: not heavily used in scaffold yet.
@@ -149,6 +164,11 @@ class RoundState:
     metrics_after: Dict[str, float] = field(default_factory=dict)
     reward: Optional[float] = None
     scheduler_snapshot: Dict[str, Any] = field(default_factory=dict)
+    backend_ref: Dict[str, Any] = field(default_factory=dict)
+    last_poll_progress: Dict[str, Any] = field(default_factory=dict)
+    pull_summary: Dict[str, Any] = field(default_factory=dict)
+    backend_error_history: List[Dict[str, Any]] = field(default_factory=list)
+    selection_audit: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
 
 
@@ -220,6 +240,9 @@ class ProjectState:
         sample_labels (Dict[str, Any]):
             sample_id -> final label value.
             Where: training labels are read from this map.
+        sample_review_metadata (Dict[str, Dict[str, Any]]):
+            sample_id -> audit details for non-labeled annotation resolutions.
+            Where: review queues, status, and reports read conflict/timeout reasons.
         rounds (List[RoundState]):
             History of rounds.
             Where: used for resume and reporting.
@@ -249,10 +272,12 @@ class ProjectState:
     splits: Dict[str, List[str]] = field(default_factory=dict)
     sample_status: Dict[str, str] = field(default_factory=dict)
     sample_labels: Dict[str, Any] = field(default_factory=dict)
+    sample_review_metadata: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     rounds: List[RoundState] = field(default_factory=list)
     metrics_history: List[MetricRecord] = field(default_factory=list)
     scheduler_state: Dict[str, Any] = field(default_factory=dict)
     caches_index: Dict[str, Any] = field(default_factory=dict)
+    audit_artifacts: Dict[str, Any] = field(default_factory=dict)
 
 
 def _from_dict_roundstate(payload: Dict[str, Any]) -> RoundState:
@@ -268,6 +293,15 @@ def _from_dict_roundstate(payload: Dict[str, Any]) -> RoundState:
         metrics_after=dict(payload.get("metrics_after", {})),
         reward=payload.get("reward"),
         scheduler_snapshot=dict(payload.get("scheduler_snapshot", {})),
+        backend_ref=dict(payload.get("backend_ref", {})),
+        last_poll_progress=dict(payload.get("last_poll_progress", {})),
+        pull_summary=dict(payload.get("pull_summary", {})),
+        backend_error_history=[
+            dict(item)
+            for item in payload.get("backend_error_history", [])
+            if isinstance(item, Mapping)
+        ],
+        selection_audit=dict(payload.get("selection_audit", {})),
         error=payload.get("error"),
     )
 
@@ -295,13 +329,85 @@ def state_to_json_dict(state: ProjectState) -> Dict[str, Any]:
     return dataclass_to_dict(state)
 
 
+def clone_project_state(state: ProjectState) -> ProjectState:
+    """Return a detached ProjectState copy using the persisted JSON contract."""
+    return state_from_json_dict(state_to_json_dict(state))
+
+
+def validate_state_version(version: Any) -> int:
+    """Return a supported state version or raise a clear compatibility error."""
+    if isinstance(version, bool):
+        raise StateCorruptedError(f"Invalid state_version {version!r}; expected integer state schema version.")
+    try:
+        parsed = int(version)
+    except Exception as error:
+        raise StateCorruptedError(f"Invalid state_version {version!r}; expected integer state schema version.") from error
+    if parsed not in SUPPORTED_STATE_VERSIONS:
+        supported = ", ".join(str(item) for item in sorted(SUPPORTED_STATE_VERSIONS))
+        raise StateCorruptedError(
+            f"Unsupported state_version {parsed}. Supported versions: {supported}; current version: {CURRENT_STATE_VERSION}."
+        )
+    return parsed
+
+
+def migrate_state_payload(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """
+    Compatibility hook for persisted state payloads.
+
+    Version 1 is current and needs no transformation. Future migrations should be
+    added here so load-time compatibility stays centralized in the state layer.
+    """
+    migrated = dict(payload)
+    migrated["state_version"] = validate_state_version(migrated.get("state_version"))
+    return migrated
+
+
+def validate_sample_status_payload(sample_status: Any) -> Dict[str, str]:
+    """Return normalized sample statuses or raise when state contains unknown lifecycle values."""
+    if sample_status is None:
+        return {}
+    if not isinstance(sample_status, Mapping):
+        raise StateCorruptedError("Invalid sample_status: expected mapping of sample_id to status.")
+    allowed = {status.value for status in SampleStatus}
+    normalized: Dict[str, str] = {}
+    for raw_sample_id, raw_status in sample_status.items():
+        sample_id = str(raw_sample_id)
+        status = str(raw_status)
+        if status not in allowed:
+            expected = ", ".join(sorted(allowed))
+            raise StateCorruptedError(
+                f"Invalid sample_status for sample_id={sample_id!r}: {status!r}. Expected one of: {expected}."
+            )
+        normalized[sample_id] = status
+    return normalized
+
+
+def validate_sample_review_metadata_payload(sample_review_metadata: Any) -> Dict[str, Dict[str, Any]]:
+    """Return normalized review metadata while keeping v1 states without this field valid."""
+    if sample_review_metadata is None:
+        return {}
+    if not isinstance(sample_review_metadata, Mapping):
+        raise StateCorruptedError("Invalid sample_review_metadata: expected mapping of sample_id to metadata.")
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for raw_sample_id, raw_metadata in sample_review_metadata.items():
+        if not isinstance(raw_metadata, Mapping):
+            raise StateCorruptedError(
+                f"Invalid sample_review_metadata for sample_id={str(raw_sample_id)!r}: expected metadata mapping."
+            )
+        normalized[str(raw_sample_id)] = dict(raw_metadata)
+    return normalized
+
+
 def state_from_json_dict(payload: Dict[str, Any]) -> ProjectState:
     """Parse dict loaded from JSON into ProjectState dataclasses."""
     try:
+        payload = migrate_state_payload(payload)
         dataset_ref = _from_dict_dataset_ref(payload["dataset_ref"]) if payload.get("dataset_ref") else None
         rounds = [_from_dict_roundstate(item) for item in payload.get("rounds", [])]
         metrics_history = [_from_dict_metric_record(item) for item in payload.get("metrics_history", [])]
-        return ProjectState(
+        sample_status = validate_sample_status_payload(payload.get("sample_status", {}))
+        sample_review_metadata = validate_sample_review_metadata_payload(payload.get("sample_review_metadata", {}))
+        state = ProjectState(
             state_version=int(payload["state_version"]),
             project_name=str(payload["project_name"]),
             created_at=float(payload["created_at"]),
@@ -315,14 +421,20 @@ def state_from_json_dict(payload: Dict[str, Any]) -> ProjectState:
             split_config=dict(payload.get("split_config", {})),
             prelabel_config=dict(payload.get("prelabel_config", {})),
             splits=dict(payload.get("splits", {})),
-            sample_status=dict(payload.get("sample_status", {})),
+            sample_status=sample_status,
             sample_labels=dict(payload.get("sample_labels", {})),
+            sample_review_metadata=sample_review_metadata,
             rounds=rounds,
             metrics_history=metrics_history,
             scheduler_state=dict(payload.get("scheduler_state", {})),
             caches_index=dict(payload.get("caches_index", {})),
+            audit_artifacts=dict(payload.get("audit_artifacts", {})),
         )
+        _assert_strict_json_safe(state_to_json_dict(state))
+        return state
     except Exception as error:
+        if isinstance(error, StateCorruptedError):
+            raise
         raise StateCorruptedError(f"Failed to parse project state: {error}") from error
 
 
@@ -369,14 +481,60 @@ class JsonFileStateStore:
         if not self.state_path.exists():
             raise StateCorruptedError(f"State file does not exist: {self.state_path}")
         try:
-            payload = json.loads(self.state_path.read_text(encoding="utf-8"))
+            payload = json.loads(self.state_path.read_text(encoding="utf-8"), parse_constant=_reject_json_constant)
             return state_from_json_dict(payload)
         except json.JSONDecodeError as error:
             raise StateCorruptedError(f"Invalid JSON in state file: {error}") from error
+        except ValueError as error:
+            raise StateCorruptedError(f"Invalid JSON in state file: {error}") from error
         except Exception as error:
+            if isinstance(error, StateCorruptedError):
+                raise
             raise StateCorruptedError(f"Failed to load state file: {error}") from error
 
     def save_atomic(self, state: ProjectState) -> None:
         """Write the state to disk using atomic replacement."""
-        serialized = json.dumps(state_to_json_dict(state), ensure_ascii=False, indent=2)
-        atomic_write_text(self.state_path, serialized)
+        payload = state_to_json_dict(state)
+        _assert_strict_json_safe(payload)
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False)
+        atomic_write_text(self.state_path, serialized + "\n")
+
+
+def _reject_json_constant(token: str) -> None:
+    raise ValueError(f"non-finite JSON constant {token!r} is not allowed in state files")
+
+
+def _assert_strict_json_safe(value: Any, path: Sequence[str] = ()) -> None:
+    if value is None or isinstance(value, (str, bool)):
+        return
+    if isinstance(value, numbers.Integral):
+        return
+    if isinstance(value, numbers.Real):
+        number = float(value)
+        if not math.isfinite(number):
+            raise StateCorruptedError(
+                f"Cannot save state with non-finite float at {_format_json_path(path)}: {number!r}. "
+                "State JSON requires finite numeric values."
+            )
+        return
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _assert_strict_json_safe(item, (*path, str(key)))
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _assert_strict_json_safe(item, (*path, f"[{index}]"))
+        return
+    # Let json.dumps raise for non-JSON types after the precise finite-number check.
+
+
+def _format_json_path(path: Sequence[str]) -> str:
+    if not path:
+        return "$"
+    rendered = "$"
+    for part in path:
+        if part.startswith("["):
+            rendered += part
+        else:
+            rendered += f".{part}"
+    return rendered
