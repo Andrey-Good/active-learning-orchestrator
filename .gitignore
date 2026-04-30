@@ -209,8 +209,9 @@ __marimo__/
 # Claude Code
 .claude/
 
-# Internal agent orchestration artifacts
-.agents/
+# Agent orchestration history
+.agents/archive/
+.agents/tmp/
 
 # Internal planning docs (sprint assignments, task CSVs)
 docs/planning/
