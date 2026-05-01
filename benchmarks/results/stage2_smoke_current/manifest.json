@@ -1,0 +1,102 @@
+{
+  "argv": [
+    "--preset",
+    "smoke",
+    "--output-dir",
+    "benchmarks/results/stage2_smoke_current",
+    "--overwrite"
+  ],
+  "artifact_names": [
+    "full_train_reference.csv",
+    "manifest.json",
+    "metrics.csv",
+    "selections.csv",
+    "stop_policies.csv",
+    "summary.json",
+    "summary.md",
+    "validation.json"
+  ],
+  "artifact_schema_version": 1,
+  "artifacts": {
+    "full_train_reference_csv": "full_train_reference.csv",
+    "manifest_json": "manifest.json",
+    "metrics_csv": "metrics.csv",
+    "selections_csv": "selections.csv",
+    "stop_policies_csv": "stop_policies.csv",
+    "summary_json": "summary.json",
+    "summary_md": "summary.md",
+    "validation_json": "validation.json"
+  },
+  "benchmark_claim_category": "active_learning_quality",
+  "benchmark_contract": "Compares SDK acquisition strategies under the same benchmark-owned datasets, sklearn text adapter, pool order, seeds, and cumulative label budgets. Acquisition calls use StrategyScheduler and SelectionContext, while true labels remain hidden from the acquisition-visible provider. Claims are limited to diagnostic active-learning quality, label coverage, stop-policy, and runtime behavior for the configured synthetic or explicitly capped real-data fixtures; this is not native external-library workflow evidence and not proof of broad production superiority.",
+  "budgets": [
+    12,
+    24,
+    36
+  ],
+  "datasets": [
+    "separable_topics",
+    "rare_class_trap"
+  ],
+  "elapsed_seconds": 0.925443299998733,
+  "git": {
+    "dirty": true,
+    "sha": "60b7babc0ca96cdc7ec70c315660aa8162149c77",
+    "status_count": 68,
+    "status_entry_count": 68
+  },
+  "initial_seed_size": 9,
+  "max_test_samples": null,
+  "max_train_samples": null,
+  "preset": "smoke",
+  "run_id": "20260428-204736",
+  "runtime": {
+    "platform": "Windows-11-10.0.26100-SP0",
+    "platform_machine": "AMD64",
+    "platform_system": "Windows",
+    "python_version": "3.12.11 (main, Aug 18 2025, 19:17:54) [MSC v.1944 64 bit (AMD64)]",
+    "python_version_info": {
+      "major": 3,
+      "micro": 11,
+      "minor": 12
+    }
+  },
+  "sdk_gap": "No current SDK gap for public initial-label import: ActiveLearningProject.import_labels(...) imports seed and validation labels through the public facade. This scheduler-level benchmark keeps seed labels in benchmark-owned state so strategy curves can be compared without project state-machine overhead.",
+  "sdk_usage": "Uses active_learning_sdk.engine.StrategyScheduler and SelectionContext for acquisition.",
+  "seeds": [
+    13
+  ],
+  "stop_policies": [
+    {
+      "metric_name": "macro_f1",
+      "min_budget": 24,
+      "min_delta": 0.001,
+      "name": "macro_f1_plateau_fast",
+      "patience": 1,
+      "policy_type": "plateau"
+    },
+    {
+      "metric_name": "macro_f1",
+      "min_budget": 32,
+      "min_delta": 0.001,
+      "name": "macro_f1_plateau_conservative",
+      "patience": 2,
+      "policy_type": "plateau"
+    },
+    {
+      "metric_name": "accuracy",
+      "min_budget": 32,
+      "min_delta": 0.001,
+      "name": "accuracy_plateau_conservative",
+      "patience": 2,
+      "policy_type": "plateau"
+    }
+  ],
+  "strategies": [
+    "random",
+    "entropy",
+    "margin",
+    "least_confidence",
+    "mix_entropy_random"
+  ]
+}

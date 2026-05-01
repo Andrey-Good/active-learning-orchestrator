@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Dataset fingerprinting.
 
@@ -10,18 +8,16 @@ Example problem it prevents:
 Without fingerprinting you could silently mix labels and destroy the experiment.
 """
 
+from __future__ import annotations
+
+
 import hashlib
 import json
 from typing import Any
 
 from ..configs import FingerprintConfig
 from ..exceptions import ConfigurationError
-from .provider import DatasetProvider
-
-try:
-    import xxhash as _xxhash  # type: ignore
-except Exception:
-    _xxhash = None  # type: ignore
+from .provider import DatasetProvider, _json_safe_value
 
 
 class DatasetFingerprinter:
@@ -73,9 +69,13 @@ class DatasetFingerprinter:
         if self.config.mode == "strict":
             for sample_id in sample_ids:
                 sample = provider.get_sample(sample_id)
-                text = self._normalize_text(str(sample.data.get("text", "")))
+                payload = {
+                    "data": self._strict_payload(sample.data),
+                    "meta": self._strict_payload(sample.meta),
+                    "group_id": self._strict_payload(sample.group_id),
+                }
                 self._update_hasher(hasher, sample_id)
-                self._update_hasher(hasher, self._digest_text(text))
+                self._update_hasher(hasher, self._digest_payload(payload))
             return self._finalize_hasher(hasher)
 
         raise ConfigurationError(f"Unsupported fingerprint mode: {self.config.mode}")
@@ -90,11 +90,24 @@ class DatasetFingerprinter:
         hasher.update(text.encode("utf-8", errors="replace"))
         return hasher.hexdigest()
 
+    def _strict_payload(self, data: Any) -> Any:
+        payload = _json_safe_value(data)
+        if isinstance(payload, dict) and "text" in payload:
+            payload = dict(payload)
+            payload["text"] = self._normalize_text(str(payload["text"]))
+        return payload
+
+    def _digest_payload(self, payload: Any) -> str:
+        serialized = json.dumps(payload, sort_keys=True, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        return self._digest_text(serialized)
+
     def _new_hasher(self) -> Any:
         if self.config.hash_algo == "xxhash64":
-            if _xxhash is None:
+            try:
+                import xxhash  # type: ignore
+            except Exception:
                 raise ConfigurationError("xxhash is not installed. Install active-learning-sdk[xxhash] or use blake2b.")
-            return _xxhash.xxh64()  # type: ignore[attr-defined]
+            return xxhash.xxh64()  # type: ignore[attr-defined]
         if self.config.hash_algo == "sha256":
             return hashlib.sha256()
         return hashlib.blake2b(digest_size=32)

@@ -480,4 +480,3 @@ State это "память проекта", он лежит в `workdir/state.js
 1. Backend Label Studio (`src/active_learning_sdk/backends/label_studio.py`).
 2. Минимальный репорт (хотя бы "таблица метрик" в HTML) в `src/active_learning_sdk/report.py`.
 3. Тесты на идемпотентность раундов и state transitions (когда появится тестовый каркас).
-

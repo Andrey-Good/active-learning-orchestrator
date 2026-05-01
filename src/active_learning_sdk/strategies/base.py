@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Sampling strategy interface.
 
@@ -9,6 +7,9 @@ For juniors:
 - A strategy does NOT talk to state.json directly.
 - It receives a `SelectionContext` that provides access to the dataset and model.
 """
+
+from __future__ import annotations
+
 
 from typing import List, Protocol, Sequence, TYPE_CHECKING
 
@@ -32,6 +33,7 @@ class SamplingStrategy(Protocol):
     """
 
     name: str
+    required_capabilities: frozenset[str]
 
     def select(self, pool_ids: Sequence[str], k: int, context: "SelectionContext") -> List[str]:
         ...

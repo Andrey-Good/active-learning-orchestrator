@@ -623,4 +623,3 @@ new_state = StrategyScheduler.update_reward(
    - `_next_step`
    - `_step_select` OR `_step_push` OR `_step_wait` OR `_step_pull` OR `_step_train_eval` OR `_step_update`
    - возвращает `StepResult`
-

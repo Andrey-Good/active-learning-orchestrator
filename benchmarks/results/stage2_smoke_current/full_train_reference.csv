@@ -1,0 +1,3 @@
+dataset,seed,train_size,test_size,accuracy,balanced_accuracy,macro_f1,weighted_f1,macro_recall,rare_recall,zero_recall_class_count,zero_recall_class_fraction,label_coverage_count,label_coverage_fraction,class_coverage_count,class_coverage_fraction,missing_label_count,missing_label_fraction,missing_class_count,missing_class_fraction,missing_test_support_weighted_fraction,runtime_seconds
+separable_topics,13,216,108,1.0,1.0,1.0,1.0,1.0,,0.0,0.0,3,1.0,3,1.0,0,0.0,0,0.0,0.0,0.01751259999946342
+rare_class_trap,13,220,120,0.9916666666666667,0.9833333333333334,0.9867581557722404,0.9916185145058384,0.9833333333333334,0.95,0.0,0.0,3,1.0,3,1.0,0,0.0,0,0.0,0.0,0.02242850000038743

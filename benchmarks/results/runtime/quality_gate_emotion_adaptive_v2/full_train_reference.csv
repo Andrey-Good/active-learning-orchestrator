@@ -1,0 +1,4 @@
+dataset,seed,train_size,test_size,accuracy,balanced_accuracy,macro_f1,weighted_f1,macro_recall,rare_recall,zero_recall_class_count,zero_recall_class_fraction,label_coverage_count,label_coverage_fraction,class_coverage_count,class_coverage_fraction,missing_label_count,missing_label_fraction,missing_class_count,missing_class_fraction,missing_test_support_weighted_fraction,runtime_seconds
+dair_ai_emotion,13,300,300,0.37666666666666665,0.2061785287591739,0.15333829933382603,0.27375062075006157,0.2061785287591739,,3.0,0.5,6,1.0,6,1.0,0,0.0,0,0.0,0.0,0.14015590000053635
+dair_ai_emotion,21,300,300,0.43666666666666665,0.21599596886294137,0.1723113800461867,0.34237913999239966,0.21599596886294137,,4.0,0.6666666666666666,6,1.0,6,1.0,0,0.0,0,0.0,0.0,0.12826299999869661
+dair_ai_emotion,34,300,300,0.4666666666666667,0.24580896686159845,0.2236050807245716,0.3875884401620439,0.24580896686159845,,2.0,0.3333333333333333,6,1.0,6,1.0,0,0.0,0,0.0,0.0,0.09090779999860388

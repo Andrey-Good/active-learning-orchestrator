@@ -1,23 +1,135 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
 [project]
-name = "active-learning-orchestrator-lab"
+name = "active-learning-sdk"
 version = "0.1.0"
-description = "Notebook runtime dependencies for the active learning experiment lab."
+description = "Resumable active learning SDK for dataset selection, labeling orchestration, and model training loops."
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+authors = [
+    { name = "Active Learning SDK Maintainers" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
-    "datasets==4.8.4",
-    "ipykernel==7.2.0",
-    "nbclient==0.10.4",
-    "nbformat==5.10.4",
-    "pandas==3.0.2",
-    "protobuf==7.34.1",
-    "scikit-learn==1.8.0",
-    "sentencepiece==0.2.1",
-    "torch==2.11.0",
-    "transformers==5.5.4",
+    "numpy>=2,<3",
+]
+
+[project.urls]
+Documentation = "https://github.com/Andrey-Good/active-learning-orchestrator#readme"
+Issues = "https://github.com/Andrey-Good/active-learning-orchestrator/issues"
+Source = "https://github.com/Andrey-Good/active-learning-orchestrator"
+
+[project.optional-dependencies]
+sklearn = [
+    "scikit-learn>=1.4,<2",
+]
+huggingface = [
+    "protobuf>=4,<8",
+    "sentencepiece>=0.2,<0.3",
+    "torch>=2,<3",
+    "transformers>=4,<6",
+]
+datasets = [
+    "datasets>=2,<5",
+    "pandas>=2,<4",
+]
+xxhash = [
+    "xxhash>=3,<4",
+]
+benchmarks = [
+    "datasets>=2,<5",
+    "pandas>=2,<4",
+    "scikit-learn>=1.4,<2",
+]
+all = [
+    "datasets>=2,<5",
+    "pandas>=2,<4",
+    "protobuf>=4,<8",
+    "scikit-learn>=1.4,<2",
+    "sentencepiece>=0.2,<0.3",
+    "torch>=2,<3",
+    "transformers>=4,<6",
+    "xxhash>=3,<4",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.10,<2",
+    "pandas>=2,<4",
+    "pytest>=8.4,<9",
+    "ruff>=0.8,<1",
+    "scikit-learn>=1.4,<2",
+    "twine>=6,<7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/active_learning_sdk"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/active_learning_sdk/backends/assets/label_studio/docker-compose.yml" = "active_learning_sdk/backends/assets/label_studio/docker-compose.yml"
+"src/active_learning_sdk/backends/assets/label_studio/nginx.conf" = "active_learning_sdk/backends/assets/label_studio/nginx.conf"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+    "/CODE_OF_CONDUCT.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+    "/SUPPORT.md",
+    "/pyproject.toml",
+    "/docs/README.md",
+    "/docs/SDK_CONTRACTS.md",
+    "/docs/BENCHMARK_EVIDENCE.md",
+    "/docs/LABEL_STUDIO_LIVE_TESTS.md",
+    "/benchmarks/README.md",
+    "/benchmarks/sdk_first_benchmark.py",
+    "/benchmarks/reference_strategy_benchmark.py",
+    "/benchmarks/manual_strategy_benchmark.py",
+    "/benchmarks/native_external_benchmark.py",
+    "/benchmarks/quality_gate_report.py",
+    "/benchmarks/results/current_benchmark_report.md",
+    "/benchmarks/results/stage2_smoke_current",
+    "/benchmarks/results/stage9_final",
+    "/benchmarks/results/stage9_reference",
+    "/benchmarks/results/runtime/local_gate_synthetic_v1",
+    "/benchmarks/results/runtime/quality_gate_banking77_wave6_current",
+    "/benchmarks/results/runtime/quality_gate_emotion_adaptive_v2",
+    "/docker/label_studio/README.md",
+    "/docker/label_studio/docker-compose.yml",
+    "/docker/label_studio/nginx.conf",
 ]
 
 [tool.uv]
-package = false
+package = true
+
+[tool.mypy]
+python_version = "3.12"
+
+[tool.ruff]
+extend-exclude = [".agents"]
+
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "xxhash.*"]
+ignore_missing_imports = true
+
+[tool.ruff.lint.per-file-ignores]
+"benchmarks/*.py" = ["E402"]
+"tests/*.py" = ["E402"]
 
 [tool.uv.sources]
 torch = { index = "pytorch-cu128" }

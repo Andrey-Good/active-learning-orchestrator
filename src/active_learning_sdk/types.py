@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """
 Core data structures and enums used across the SDK.
 
@@ -7,6 +5,9 @@ These types are shared by multiple subsystems (engine, state, backends, dataset,
 If you are adding a new feature, prefer reusing these types instead of inventing
 new ad-hoc dict formats.
 """
+
+from __future__ import annotations
+
 
 import enum
 from dataclasses import dataclass, field

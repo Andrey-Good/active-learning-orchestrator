@@ -1,0 +1,253 @@
+{
+  "checks": [
+    {
+      "checks": [
+        {
+          "compressed_prefix": [
+            "science",
+            "finance",
+            "sports",
+            "finance",
+            "sports",
+            "finance",
+            "sports",
+            "science",
+            "sports",
+            "finance",
+            "sports",
+            "science",
+            "sports",
+            "finance",
+            "science",
+            "sports",
+            "science",
+            "finance",
+            "science",
+            "finance"
+          ],
+          "item_count": 108,
+          "kind": "sample_id",
+          "label_transitions": 78,
+          "split": "test",
+          "unique_label_count": 3
+        },
+        {
+          "compressed_prefix": [
+            "science",
+            "finance",
+            "sports",
+            "finance",
+            "sports",
+            "finance",
+            "sports",
+            "science",
+            "finance",
+            "science",
+            "finance",
+            "science",
+            "finance",
+            "sports"
+          ],
+          "item_count": 18,
+          "kind": "group_id",
+          "label_transitions": 13,
+          "split": "test",
+          "unique_label_count": 3
+        },
+        {
+          "compressed_prefix": [
+            "science",
+            "sports",
+            "finance",
+            "science",
+            "finance",
+            "sports",
+            "science",
+            "sports",
+            "science",
+            "sports",
+            "finance",
+            "science",
+            "sports",
+            "finance",
+            "sports",
+            "finance",
+            "sports",
+            "finance",
+            "sports",
+            "finance"
+          ],
+          "item_count": 216,
+          "kind": "sample_id",
+          "label_transitions": 133,
+          "split": "train",
+          "unique_label_count": 3
+        },
+        {
+          "compressed_prefix": [
+            "science",
+            "sports",
+            "finance",
+            "science",
+            "finance",
+            "sports",
+            "science",
+            "sports",
+            "science",
+            "finance",
+            "sports",
+            "finance",
+            "sports",
+            "finance",
+            "sports",
+            "finance",
+            "sports",
+            "finance",
+            "sports",
+            "finance"
+          ],
+          "item_count": 36,
+          "kind": "group_id",
+          "label_transitions": 26,
+          "split": "train",
+          "unique_label_count": 3
+        }
+      ],
+      "dataset": "separable_topics",
+      "label_leak_count": 0,
+      "labels": [
+        "sports",
+        "science",
+        "finance"
+      ],
+      "samples": 324
+    },
+    {
+      "checks": [
+        {
+          "compressed_prefix": [
+            "routine",
+            "urgent",
+            "rare",
+            "urgent",
+            "routine",
+            "rare",
+            "urgent",
+            "routine",
+            "urgent",
+            "rare",
+            "routine",
+            "urgent",
+            "routine",
+            "urgent",
+            "rare",
+            "routine",
+            "rare",
+            "urgent",
+            "routine",
+            "rare"
+          ],
+          "item_count": 120,
+          "kind": "sample_id",
+          "label_transitions": 69,
+          "split": "test",
+          "unique_label_count": 3
+        },
+        {
+          "compressed_prefix": [
+            "routine",
+            "urgent",
+            "rare",
+            "urgent",
+            "routine",
+            "rare",
+            "urgent",
+            "routine",
+            "urgent",
+            "rare",
+            "routine",
+            "urgent",
+            "routine",
+            "rare",
+            "routine",
+            "urgent",
+            "routine"
+          ],
+          "item_count": 24,
+          "kind": "group_id",
+          "label_transitions": 16,
+          "split": "test",
+          "unique_label_count": 3
+        },
+        {
+          "compressed_prefix": [
+            "urgent",
+            "routine",
+            "urgent",
+            "routine",
+            "rare",
+            "routine",
+            "urgent",
+            "routine",
+            "rare",
+            "urgent",
+            "routine",
+            "urgent",
+            "routine",
+            "urgent",
+            "routine",
+            "urgent",
+            "routine",
+            "urgent",
+            "rare",
+            "routine"
+          ],
+          "item_count": 220,
+          "kind": "sample_id",
+          "label_transitions": 117,
+          "split": "train",
+          "unique_label_count": 3
+        },
+        {
+          "compressed_prefix": [
+            "urgent",
+            "routine",
+            "urgent",
+            "routine",
+            "rare",
+            "routine",
+            "urgent",
+            "routine",
+            "rare",
+            "routine",
+            "urgent",
+            "routine",
+            "urgent",
+            "routine",
+            "urgent",
+            "routine",
+            "urgent",
+            "routine",
+            "rare",
+            "urgent"
+          ],
+          "item_count": 44,
+          "kind": "group_id",
+          "label_transitions": 22,
+          "split": "train",
+          "unique_label_count": 3
+        }
+      ],
+      "dataset": "rare_class_trap",
+      "label_leak_count": 0,
+      "labels": [
+        "routine",
+        "urgent",
+        "rare"
+      ],
+      "samples": 340
+    }
+  ],
+  "datasets_checked": 2,
+  "run_id": "20260428-204736"
+}
