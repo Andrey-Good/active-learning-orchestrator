@@ -120,9 +120,6 @@ package = true
 [tool.mypy]
 python_version = "3.12"
 
-[tool.ruff]
-extend-exclude = [".agents"]
-
 [[tool.mypy.overrides]]
 module = ["sklearn.*", "xxhash.*"]
 ignore_missing_imports = true

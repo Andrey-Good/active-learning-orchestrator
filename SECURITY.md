@@ -20,7 +20,7 @@ Include:
 
 ## Secrets And Local Services
 
-Never commit real Label Studio tokens, passwords, API keys, `.env` files, SQLite runtime state, or generated workdirs. The repository ignores managed Label Studio runtime data under `docker/label_studio/data/` and internal agent artifacts under `.agents/`.
+Never commit real Label Studio tokens, passwords, API keys, `.env` files, SQLite runtime state, or generated workdirs. The repository ignores managed Label Studio runtime data under `docker/label_studio/data/`.
 
 ## Dependency Policy
 

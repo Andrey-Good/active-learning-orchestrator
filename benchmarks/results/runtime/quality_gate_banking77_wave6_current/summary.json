@@ -155,7 +155,7 @@
       "--max-test-samples",
       "250",
       "--output-dir",
-      ".agents\\tmp\\wave6_fix_banking77_trial2",
+      "benchmarks\\results\\runtime\\quality_gate_banking77_wave6_current",
       "--overwrite"
     ],
     "artifact_names": [
