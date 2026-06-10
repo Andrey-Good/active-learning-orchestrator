@@ -25,7 +25,7 @@ uv run --with twine twine check dist/*.tar.gz dist/*.whl
 - Preserve public API compatibility unless the change is explicitly proposed as breaking.
 - Do not change strategy selection order, tie-breaking, cache keys, split resolution, or benchmark evidence semantics without targeted regression tests.
 - Do not add heavy dependencies to the core package. Use optional extras.
-- Do not commit generated workdirs, `.agents/`, benchmark scratch output, Docker runtime state, credentials, or local caches.
+- Do not commit generated workdirs, benchmark scratch output, Docker runtime state, credentials, or local caches.
 - Add tests for new public behavior and edge cases.
 - Keep benchmark claims scoped. Do not claim universal strategy superiority from small diagnostic evidence.
 
