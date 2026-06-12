@@ -18,7 +18,7 @@ Newly generated SDK-first, reference, and project-smoke manifests are schema-bea
 
 Retained Stage 9 directories are accepted diagnostic evidence, but some artifacts are legacy/pre-schema. Treat missing manifest fields in retained Stage 9 JSON as historical artifact limitations, not as permission to omit those fields from new runs.
 
-Retained capped-real Banking77 evidence with two seeds is diagnostic only. It is not Stage 11 standard real evidence because standard real reports now require at least three seeds, explicit train/test caps, and calibration metrics in both `metrics.csv` and `full_train_reference.csv`.
+The current promoted capped-real standard evidence is `benchmarks/results/runtime/quality_gate_adaptive_budget_curve_20260612/`: Banking77 and DAIR.AI Emotion, seeds `13,21,34`, budgets `50,100,200,300,400`, train cap `500`, test cap `250`, and quality gate PASS. Older capped-real Banking77 or Emotion artifacts remain diagnostic or historical unless a newer report explicitly promotes them.
 
 ## Stage 11 Standard Real Reports
 

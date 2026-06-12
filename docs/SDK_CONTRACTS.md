@@ -141,12 +141,12 @@ sample ids and a scheduler snapshot suitable for persistence. The exact snapshot
 schema is provisional unless it appears in persisted state compatibility tests.
 
 `adaptive_uncertainty_diversity` is a pragmatic default candidate, not a universal
-scientific optimum. For many-class text classification with very small labeled
-coverage, it deliberately uses matched random exploration before switching to
-diversity-prefiltered uncertainty. This avoids over-exploiting probability
-support for only the classes already seen by the model. For smaller label spaces,
-it retains the earlier guarded uncertainty/diversity behavior and later switches
-to entropy.
+scientific optimum. For many-class text classification when public probability
+and embedding capabilities are available, it uses diversity-prefiltered
+uncertainty across acquisition rounds. This avoids relying on matched random
+exploration while still reducing over-exploitation of probability support for
+only the classes already seen by the model. For smaller label spaces, it retains
+the earlier guarded uncertainty/diversity behavior and later switches to entropy.
 
 ## Caches
 

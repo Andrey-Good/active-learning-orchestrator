@@ -20,7 +20,7 @@ MANIFEST_FILE = "manifest.json"
 
 REQUIRED_COLUMNS = {"dataset", "strategy", "seed", "budget", "macro_f1", "runtime_seconds"}
 CALIBRATION_METRICS = ("multiclass_brier_score", "nll", "ece")
-REAL_DATASETS = {"banking77", "clinc_oos_imbalanced", "clinc_oos_plus", "dair_ai_emotion"}
+REAL_DATASETS = {"ag_news", "banking77", "clinc_oos_imbalanced", "clinc_oos_plus", "dair_ai_emotion", "sst2"}
 REAL_STANDARD_PRESETS = {"real_medium", "real_full"}
 REAL_STANDARD_MIN_SEEDS = 3
 REAL_STANDARD_REQUIRED_METRICS = (

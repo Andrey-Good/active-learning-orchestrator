@@ -232,6 +232,7 @@ benchmarks/*deep_audit*.py
 benchmarks/results/**
 !benchmarks/results/
 !benchmarks/results/current_benchmark_report.md
+!benchmarks/results/sdk_metrics_slide_dossier_20260612.md
 !benchmarks/results/stage2_smoke_current/
 !benchmarks/results/stage2_smoke_current/**
 !benchmarks/results/stage9_final/
@@ -245,4 +246,6 @@ benchmarks/results/**
 !benchmarks/results/runtime/quality_gate_banking77_wave6_current/**
 !benchmarks/results/runtime/quality_gate_emotion_adaptive_v2/
 !benchmarks/results/runtime/quality_gate_emotion_adaptive_v2/**
+!benchmarks/results/runtime/quality_gate_adaptive_budget_curve_20260612/
+!benchmarks/results/runtime/quality_gate_adaptive_budget_curve_20260612/**
 benchmarks/results/probe_runtime*/

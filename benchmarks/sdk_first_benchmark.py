@@ -12,6 +12,7 @@ import sys
 import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -204,6 +205,8 @@ DATASET_ID_PREFIXES = {
     "clinc_oos_plus": "ds102",
     "banking77": "ds103",
     "dair_ai_emotion": "ds104",
+    "ag_news": "ds105",
+    "sst2": "ds106",
 }
 
 
@@ -247,6 +250,27 @@ REAL_DATASET_REGISTRY = {
         label_column="label",
         label_name_column=None,
         description="DAIR AI emotion classification dataset, useful as an easier real-data sanity check.",
+        sanity_easy_coverage=True,
+    ),
+    "ag_news": RealDatasetSpec(
+        name="ag_news",
+        hf_path="ag_news",
+        hf_config="default",
+        splits=("train", "test"),
+        text_column="text",
+        label_column="label",
+        label_name_column=None,
+        description="AG News topic classification dataset.",
+    ),
+    "sst2": RealDatasetSpec(
+        name="sst2",
+        hf_path="SetFit/sst2",
+        hf_config="default",
+        splits=("train", "test"),
+        text_column="text",
+        label_column="label",
+        label_name_column="label_text",
+        description="SST-2 binary sentiment classification dataset with labeled test split.",
         sanity_easy_coverage=True,
     ),
 }
@@ -630,6 +654,7 @@ def _assign_opaque_ids(dataset_name: str, records: Sequence[SyntheticRecord], se
     return samples
 
 
+@lru_cache(maxsize=None)
 def load_hf_dataset(path: str, config: str) -> Any:
     try:
         from datasets import load_dataset
@@ -675,6 +700,19 @@ def make_real_dataset(
         if split not in dataset_dict:
             raise RuntimeError(f"{dataset_name} is missing expected Hugging Face split: {split}")
         split_dataset = dataset_dict[split]
+        split_limit = None
+        if split == "train":
+            split_limit = max_train_samples
+        elif split == "test":
+            split_limit = max_test_samples
+        split_pre_limited = False
+        if split_limit is not None:
+            if split_limit < 0:
+                raise ValueError(f"{dataset_name}/{split} sample limit must be non-negative, got {split_limit}.")
+            if hasattr(split_dataset, "shuffle") and hasattr(split_dataset, "select"):
+                split_seed = _stable_seed(seed, dataset_name, split, "real-record-order")
+                split_dataset = split_dataset.shuffle(seed=split_seed).select(range(min(split_limit, len(split_dataset))))
+                split_pre_limited = True
         label_feature = _label_feature_for_split(split_dataset, spec.label_column)
         split_records: list[SyntheticRecord] = []
         for index, row in enumerate(split_dataset):
@@ -695,10 +733,11 @@ def make_real_dataset(
             )
 
         random.Random(_stable_seed(seed, dataset_name, split, "real-record-order")).shuffle(split_records)
-        if split == "train" and max_train_samples is not None:
-            split_records = split_records[:max_train_samples]
-        if split == "test" and max_test_samples is not None:
-            split_records = split_records[:max_test_samples]
+        if not split_pre_limited:
+            if split == "train" and max_train_samples is not None:
+                split_records = split_records[:max_train_samples]
+            if split == "test" and max_test_samples is not None:
+                split_records = split_records[:max_test_samples]
         records.extend(split_records)
 
     return BenchmarkDataset(
@@ -723,6 +762,14 @@ def make_banking77(seed: int) -> BenchmarkDataset:
 
 def make_dair_ai_emotion(seed: int) -> BenchmarkDataset:
     return make_real_dataset("dair_ai_emotion", seed)
+
+
+def make_ag_news(seed: int) -> BenchmarkDataset:
+    return make_real_dataset("ag_news", seed)
+
+
+def make_sst2(seed: int) -> BenchmarkDataset:
+    return make_real_dataset("sst2", seed)
 
 
 def build_benchmark_dataset(
@@ -839,6 +886,8 @@ DATASET_BUILDERS = {
     "clinc_oos_plus": make_clinc_oos_plus,
     "banking77": make_banking77,
     "dair_ai_emotion": make_dair_ai_emotion,
+    "ag_news": make_ag_news,
+    "sst2": make_sst2,
 }
 
 SYNTHETIC_DATASET_NAMES = ("separable_topics", "rare_class_trap", "grouped_duplicates")

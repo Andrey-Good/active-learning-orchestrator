@@ -2,26 +2,34 @@
 
 from __future__ import annotations
 
-
 from typing import List, Sequence, TYPE_CHECKING
 
+from ._shared import label_count as _shared_label_count
 from .hybrid import HybridStrategy
-from .uncertainty import EntropyStrategy, RandomStrategy
+from .uncertainty import EntropyStrategy
 
 if TYPE_CHECKING:
     from ..engine import SelectionContext
 
 _MANY_CLASS_MIN_LABELS = 20
-_MANY_CLASS_EXPLORATION_MULTIPLIER = 1.25
+_DIVERSITY_PREFILTER_UNCERTAINTY_CONFIG = {
+    "mode": "diversity_prefilter_uncertainty",
+    "uncertainty": "entropy",
+    "diversity": "coreset_kcenter",
+    "prefilter_multiplier": 3.0,
+}
+_DIVERSITY_PREFILTER_EFFECTIVE_STRATEGY = "hybrid:diversity_prefilter_uncertainty:coreset_kcenter+entropy"
 
 
 class AdaptiveUncertaintyDiversityStrategy:
-    """Start with guarded uncertainty/diversity, then switch to entropy.
+    """Adapt uncertainty/diversity defaults to label-space shape.
 
-    Early active-learning rounds benefit from exploration and group/class
-    guardrails, while later rounds can exploit model uncertainty more directly.
-    The switch is based only on already-labeled sample count and the public label
-    schema, so the strategy does not inspect unlabeled oracle labels.
+    Many-class text workflows use diversity-prefiltered uncertainty across
+    acquisition rounds when embeddings are available. Smaller label spaces start
+    with guarded uncertainty/diversity, then switch to entropy. These choices are
+    based only on already-labeled sample count, public capabilities, and the
+    public label schema, so the strategy does not inspect unlabeled oracle
+    labels.
     """
 
     name = "adaptive_uncertainty_diversity"
@@ -33,19 +41,16 @@ class AdaptiveUncertaintyDiversityStrategy:
     def select(self, pool_ids: Sequence[str], k: int, context: "SelectionContext") -> List[str]:
         if k <= 0 or not pool_ids:
             return []
-        if self._use_many_class_random_exploration(context):
-            return RandomStrategy().select(pool_ids, k, context)
         if self._use_many_class_diversity_prefilter(context):
-            return HybridStrategy(
-                {
-                    "mode": "diversity_prefilter_uncertainty",
-                    "uncertainty": "entropy",
-                    "diversity": "coreset_kcenter",
-                    "prefilter_multiplier": 3.0,
-                }
-            ).select(pool_ids, k, context).selected
+            result = self._diversity_prefilter_uncertainty().select(pool_ids, k, context)
+            self._record_strategy_diagnostic(
+                context,
+                phase="many_class_diversity_prefilter",
+                effective_strategy=_DIVERSITY_PREFILTER_EFFECTIVE_STRATEGY,
+            )
+            return result.selected
         if self._use_early_guarded_phase(context):
-            return HybridStrategy(
+            result = HybridStrategy(
                 {
                     "mode": "weighted",
                     "uncertainty": "entropy",
@@ -56,26 +61,29 @@ class AdaptiveUncertaintyDiversityStrategy:
                     "group_balance": True,
                     "exploration_fraction": 0.2,
                 }
-            ).select(pool_ids, k, context).selected
-        return EntropyStrategy().select(pool_ids, k, context)
+            ).select(pool_ids, k, context)
+            self._record_strategy_diagnostic(
+                context,
+                phase="early_guarded_hybrid",
+                effective_strategy="hybrid:weighted:coreset_kcenter+entropy",
+            )
+            return result.selected
+        selected = EntropyStrategy().select(pool_ids, k, context)
+        self._record_strategy_diagnostic(
+            context,
+            phase="mature_entropy",
+            effective_strategy=EntropyStrategy.name,
+        )
+        return selected
 
     def _label_count(self, context: "SelectionContext") -> int:
-        label_schema = getattr(context, "label_schema", None)
-        labels = getattr(label_schema, "labels", None)
-        try:
-            return len(list(labels)) if labels is not None else 0
-        except TypeError:
-            return 0
+        return _shared_label_count(context) or 0
 
     def _labeled_count(self, context: "SelectionContext") -> int:
         return len(getattr(context, "labeled_ids", []))
 
-    def _use_many_class_random_exploration(self, context: "SelectionContext") -> bool:
-        label_count = self._label_count(context)
-        if label_count < _MANY_CLASS_MIN_LABELS:
-            return False
-        exploration_until = max(32, int(label_count * _MANY_CLASS_EXPLORATION_MULTIPLIER))
-        return self._labeled_count(context) < exploration_until
+    def _diversity_prefilter_uncertainty(self) -> HybridStrategy:
+        return HybridStrategy(_DIVERSITY_PREFILTER_UNCERTAINTY_CONFIG)
 
     def _use_many_class_diversity_prefilter(self, context: "SelectionContext") -> bool:
         label_count = self._label_count(context)
@@ -88,3 +96,24 @@ class AdaptiveUncertaintyDiversityStrategy:
         label_count = self._label_count(context)
         switch_after = max(32, label_count * self.early_label_multiplier)
         return labeled_count < switch_after
+
+    def _record_strategy_diagnostic(
+        self,
+        context: "SelectionContext",
+        *,
+        phase: str,
+        effective_strategy: str,
+    ) -> None:
+        recorder = getattr(context, "record_strategy_diagnostic", None)
+        if not callable(recorder):
+            return
+        label_count = self._label_count(context)
+        recorder(
+            self.name,
+            {
+                "phase": phase,
+                "label_count": label_count,
+                "labeled_count": self._labeled_count(context),
+                "effective_strategy": effective_strategy,
+            },
+        )
