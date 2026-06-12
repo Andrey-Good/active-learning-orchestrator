@@ -207,10 +207,13 @@ class Provider:
 # --------------------------------------------------------------------------- datasets
 
 # name -> (hf_path, hf_config, text_column, label_column, train_split, test_split)
+# NOTE: use Parquet-backed mirrors (SetFit org) — Kaggle's current `datasets` library no longer
+# supports legacy script-based datasets (e.g. bare "trec"/"ag_news" raise "Dataset scripts are no
+# longer supported"). SetFit datasets expose columns: text, label (int), label_text.
 _HF_DATASETS: dict[str, tuple[str, str | None, str, str, str, str]] = {
-    "trec": ("trec", None, "text", "coarse_label", "train", "test"),
-    "ag_news": ("ag_news", None, "text", "label", "train", "test"),
-    "sst2": ("glue", "sst2", "sentence", "label", "train", "validation"),
+    "ag_news": ("SetFit/ag_news", None, "text", "label", "train", "test"),
+    "sst2": ("SetFit/sst2", None, "text", "label", "train", "validation"),
+    "emotion": ("SetFit/emotion", None, "text", "label", "train", "test"),
 }
 
 _DATASET_SEED = 12345  # fixes the (capped) pool so it is identical across AL seeds
@@ -399,7 +402,7 @@ _PRESETS: dict[str, dict[str, Any]] = {
         "max_test": None,
     },
     "deadline": {
-        "datasets": ["trec", "ag_news"],
+        "datasets": ["ag_news", "sst2"],
         "strategies": ["random", "entropy", "margin", "least_confidence", "coreset_kcenter", "badge"],
         "seeds": [13, 21, 34],
         "budgets": [50, 100, 200, 400],

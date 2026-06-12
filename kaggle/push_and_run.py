@@ -103,11 +103,13 @@ def main() -> None:
 
     username = _resolve_username(args.username)
     print(f"[auth] kaggle username: {username}")
-    kernel_id = push_kernel(args.kaggle_bin, username, args.preset)
+    # On Windows the CLI is a .bat shim; subprocess needs its full resolved path.
+    kaggle_bin = shutil.which(args.kaggle_bin) or args.kaggle_bin
+    kernel_id = push_kernel(kaggle_bin, username, args.preset)
     if args.no_wait:
         print(f"pushed. watch: https://www.kaggle.com/code/{kernel_id}")
         return
-    wait_and_pull(args.kaggle_bin, kernel_id, args.poll_seconds, Path(args.results_dir))
+    wait_and_pull(kaggle_bin, kernel_id, args.poll_seconds, Path(args.results_dir))
 
 
 if __name__ == "__main__":
