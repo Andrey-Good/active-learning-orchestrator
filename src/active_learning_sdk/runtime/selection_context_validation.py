@@ -129,7 +129,11 @@ def _validate_probability_values(values: Sequence[Any], row_index: int, sample_i
         raise ConfigurationError(
             f"model.predict_proba row {row_index} for sample {sample_id!r} must have a positive sum."
         )
-    if not math.isclose(row_sum, 1.0, rel_tol=1e-9, abs_tol=1e-12):
+    # Tolerance widened from 1e-9/1e-12 to 1e-5/1e-6 so that float16/float32 softmax
+    # outputs from transformer adapters (where summing many class probabilities in
+    # reduced precision accumulates ~1e-6 rounding error) are not spuriously rejected.
+    # Adapters should still renormalize, but this keeps the gate from silently killing runs.
+    if not math.isclose(row_sum, 1.0, rel_tol=1e-5, abs_tol=1e-6):
         raise ConfigurationError(
             f"model.predict_proba row {row_index} for sample {sample_id!r} must sum to 1.0; "
             f"got {row_sum}."

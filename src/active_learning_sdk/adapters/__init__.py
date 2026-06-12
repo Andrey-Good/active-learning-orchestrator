@@ -9,11 +9,13 @@ __all__ = [
     "TextClassificationAdapter",
     "inspect_model_capabilities",
     "HFSequenceClassifierAdapter",
+    "DistilBERTALAdapter",
     "SklearnTextClassifierAdapter",
 ]
 
 _OPTIONAL_ADAPTERS = {
     "HFSequenceClassifierAdapter": ".huggingface",
+    "DistilBERTALAdapter": ".transformer",
     "SklearnTextClassifierAdapter": ".sklearn",
 }
 
