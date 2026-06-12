@@ -67,11 +67,13 @@ def _make_adapter(
     model_name: str,
     device: str | None,
     protocol: str = "cold",
+    compile_model: bool = False,
 ) -> Any:
     """Adapter factory.  ``distilbert`` = real transformer; ``fake`` = numpy stub for offline smoke.
 
     ``protocol`` is forwarded to :class:`DistilBERTALAdapter` as ``warm_start=(protocol=="warm")``.
-    The ``fake`` adapter ignores the flag (it is a no-op there).
+    ``compile_model`` enables torch.compile (default OFF; amortizes under warm, net-negative under cold).
+    The ``fake`` adapter ignores both flags (no-op there).
     """
     if kind == "distilbert":
         from active_learning_sdk.adapters.transformer import DistilBERTALAdapter
@@ -82,9 +84,10 @@ def _make_adapter(
             seed=seed,
             device=device,
             warm_start=(protocol == "warm"),
+            compile_model=compile_model,
         )
     if kind == "fake":
-        # warm_start is a no-op for the offline stub — just accept and ignore.
+        # warm_start and compile_model are no-ops for the offline stub — accept and ignore.
         return HashingNearestCentroidAdapter(labels, seed=seed)
     raise ValueError(f"unknown adapter kind: {kind}")
 
@@ -394,6 +397,7 @@ def run_one_curve(
     device: str | None,
     adapter_kind: str = "distilbert",
     protocol: str = "cold",
+    compile_model: bool = False,
 ) -> list[dict[str, Any]]:
     sample_by_id = {s.sample_id: s for s in dataset.samples}
     train_ids = sorted(s.sample_id for s in dataset.samples if s.split == "train")
@@ -410,6 +414,7 @@ def run_one_curve(
     model = _make_adapter(
         adapter_kind, dataset.labels,
         seed=seed, model_name=model_name, device=device, protocol=protocol,
+        compile_model=compile_model,
     )
     scheduler = StrategyScheduler(SchedulerConfig(mode="single", strategy=strategy_name))
     label_schema = LabelSchema(task="text_classification", labels=dataset.labels)
@@ -597,6 +602,15 @@ def main() -> None:
         "--initial-seed-size", type=int, default=None,
         help="Override the preset's initial_seed_size (e.g. for ablation)",
     )
+    parser.add_argument(
+        "--compile", dest="compile_model", action="store_true", default=False,
+        help=(
+            "Enable torch.compile on the model (default: OFF). "
+            "Compile cost amortizes under --protocol warm (model reused across rounds) "
+            "but is net-negative under --protocol cold (model rebuilt every round). "
+            "Falls back to eager silently on torch < 2.0 or tracer errors."
+        ),
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -645,6 +659,7 @@ def main() -> None:
         rows = run_one_curve(
             dataset, strat, cfg["budgets"], seed, cfg["initial_seed_size"],
             args.model_name, args.device, adapter_kind=args.adapter, protocol=protocol,
+            compile_model=args.compile_model,
         )
         _append_rows(metrics_path, rows)
         done.add(job_key)

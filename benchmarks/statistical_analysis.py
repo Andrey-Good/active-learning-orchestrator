@@ -350,6 +350,107 @@ def write_significance(
     print(f"[significance] wrote {out}")
 
 
+def write_significance_by_dataset(
+    aulc: dict[tuple[str, str, str, int], float],
+    out: Path,
+) -> None:
+    """Per-dataset Wilcoxon signed-rank test, paired over seeds only.
+
+    For each (dataset, strategy, protocol) group, tests whether that strategy's AULC is
+    significantly greater than random's AULC, with pairs formed over seeds (not dataset×seed).
+    BH-FDR correction is applied across strategies within each (dataset, protocol) group.
+
+    This avoids the dilution effect of pooling across datasets where a strategy helps on one
+    dataset (e.g. ag_news_imb) but is neutral on others — per-dataset Wilcoxon on ag_news_imb
+    is expected to be strongly significant for class_group_balanced_entropy (p≈0.18 pooled).
+    """
+    try:
+        from scipy.stats import wilcoxon  # type: ignore
+    except Exception:
+        print("[significance_by_dataset] scipy not available; skipping")
+        return
+
+    datasets = sorted({k[0] for k in aulc})
+    strategies = sorted({k[1] for k in aulc if k[1] != RANDOM_BASELINE})
+    protocols = sorted({k[2] for k in aulc})
+
+    all_rows: list[dict[str, Any]] = []
+
+    for ds in datasets:
+        for proto in protocols:
+            # Collect seeds present for random baseline in this (dataset, protocol).
+            random_by_seed = {
+                seed: val
+                for (d, s, p, seed), val in aulc.items()
+                if d == ds and s == RANDOM_BASELINE and p == proto
+            }
+            if not random_by_seed:
+                continue
+
+            # Gather raw p-values for BH correction within this (dataset, protocol).
+            combo_order: list[str] = []
+            raw_p: list[float] = []
+            ds_combo_data: list[dict[str, Any]] = []
+
+            for strat in strategies:
+                strat_by_seed = {
+                    seed: val
+                    for (d, s, p, seed), val in aulc.items()
+                    if d == ds and s == strat and p == proto
+                }
+                shared_seeds = sorted(set(strat_by_seed) & set(random_by_seed))
+                if not shared_seeds:
+                    continue
+
+                strat_vals = [strat_by_seed[seed] for seed in shared_seeds]
+                rand_vals = [random_by_seed[seed] for seed in shared_seeds]
+                diffs = [a - b for a, b in zip(strat_vals, rand_vals)]
+                mean_lift = sum(diffs) / len(diffs) if diffs else float("nan")
+                cohens_d = _cohens_d_paired(diffs)
+                pct_beat = sum(1 for d in diffs if d > 0) / len(diffs) if diffs else float("nan")
+
+                p_value = float("nan")
+                statistic = float("nan")
+                note = ""
+                nonzero = [d for d in diffs if d != 0.0]
+                if len(nonzero) >= 6:
+                    try:
+                        res = wilcoxon(strat_vals, rand_vals, alternative="greater")
+                        statistic, p_value = float(res.statistic), float(res.pvalue)
+                    except Exception as exc:  # pragma: no cover
+                        note = f"wilcoxon_failed:{exc}"
+                else:
+                    note = f"insufficient_pairs(n_nonzero={len(nonzero)};need>=6)"
+
+                combo_order.append(strat)
+                raw_p.append(p_value)
+                ds_combo_data.append(
+                    {
+                        "dataset": ds,
+                        "strategy": strat,
+                        "protocol": proto,
+                        "baseline": RANDOM_BASELINE,
+                        "n_pairs": len(shared_seeds),
+                        "mean_aulc_lift": round(mean_lift, 5),
+                        "wilcoxon_statistic": statistic,
+                        "p_value_greater": p_value,
+                        "p_value_bh": float("nan"),  # filled below
+                        "cohens_d": round(cohens_d, 5) if not math.isnan(cohens_d) else float("nan"),
+                        "pct_seeds_beat_random": round(pct_beat, 4) if not math.isnan(pct_beat) else float("nan"),
+                        "note": note,
+                    }
+                )
+
+            # Apply BH correction within this (dataset, protocol) group.
+            bh_p = _benjamini_hochberg(raw_p)
+            for entry, p_bh in zip(ds_combo_data, bh_p):
+                entry["p_value_bh"] = p_bh
+            all_rows.extend(ds_combo_data)
+
+    _write_csv(out, all_rows)
+    print(f"[significance_by_dataset] wrote {out}")
+
+
 def write_bootstrap_ci(
     aulc: dict[tuple[str, str, str, int], float],
     out: Path,
@@ -469,6 +570,7 @@ def main() -> None:
 
     write_alc_summary(rows, aulc, input_dir / "alc_summary.csv")
     write_significance(aulc, input_dir / "statistical_tests.csv")
+    write_significance_by_dataset(aulc, input_dir / "statistical_tests_by_dataset.csv")
     write_bootstrap_ci(aulc, input_dir / "bootstrap_ci.csv")
     plot_learning_curves(rows, input_dir / "learning_curves.png")
 

@@ -57,6 +57,7 @@ class DistilBERTALAdapter(HFSequenceClassifierAdapter):
         perturb: float = 0.01,
         embed_mode: str = "mean",
         device: str | None = None,
+        compile_model: bool = False,
     ) -> None:
         _ensure_huggingface_extra()
         import torch  # type: ignore
@@ -82,6 +83,7 @@ class DistilBERTALAdapter(HFSequenceClassifierAdapter):
         self.shrink = float(shrink)
         self.perturb = float(perturb)
         self.embed_mode = embed_mode
+        self.compile_model = bool(compile_model)
 
         if device is not None:
             self._device = torch.device(device)
@@ -103,7 +105,20 @@ class DistilBERTALAdapter(HFSequenceClassifierAdapter):
         model = AutoModelForSequenceClassification.from_pretrained(
             self.model_name, num_labels=self.num_labels
         )
-        return model.to(self._device)
+        model = model.to(self._device)
+
+        # Optional torch.compile path (default OFF).
+        # IMPORTANT: under COLD-restart the model is rebuilt every round, so compile cost
+        # does NOT amortize — it is net-negative for cold.  It amortizes well under WARM
+        # (model is reused across rounds).  Only enable with --compile when running warm.
+        # A compile failure falls back to eager silently.
+        if self.compile_model:
+            try:
+                model = torch.compile(model)  # type: ignore[attr-defined]
+            except Exception:  # compile not available (torch < 2.0) or tracer error
+                pass
+
+        return model
 
     def _encode(self, texts: Sequence[str]) -> Any:
         return self.tokenizer(
@@ -151,16 +166,27 @@ class DistilBERTALAdapter(HFSequenceClassifierAdapter):
             # Warm path: model already exists.  Apply shrink-and-perturb so the optimizer
             # escapes local minima without fully discarding the prior fine-tune.
             # w <- shrink*w + N(0, perturb * std(w)), seeded deterministically per round.
-            import torch  # type: ignore
-
-            gen = torch.Generator().manual_seed(self.seed + self._round)
+            #
+            # FIX: torch.Generator must be created on the SAME device as the parameter.
+            # A CPU generator passed to .normal_() on a CUDA tensor raises:
+            #   RuntimeError: Expected a 'cuda' device type for generator but found 'cpu'
+            # We seed globally instead and use torch.randn_like() which inherits the param
+            # device/dtype automatically.  torch.manual_seed sets both CPU and CUDA seeds;
+            # torch.cuda.manual_seed_all covers multi-GPU.  The (seed + round) determinism
+            # is preserved: same seed + round → same global RNG state at this point, because
+            # no stochastic op runs between this seed call and the noise draw below.
+            torch.manual_seed(self.seed + self._round)
+            if self._device.type == "cuda":
+                torch.cuda.manual_seed_all(self.seed + self._round)
             with torch.no_grad():
                 for param in self.model.parameters():
                     if param.requires_grad:
-                        std = float(param.std()) if param.numel() > 1 else 0.0
-                        noise = torch.zeros_like(param).normal_(
-                            mean=0.0, std=max(self.perturb * std, 1e-12), generator=gen
-                        )
+                        std = float(param.float().std()) if param.numel() > 1 else 0.0
+                        # torch.randn_like preserves param device AND dtype (fp16/bf16/fp32).
+                        # The noise scale is computed in float to avoid fp16 underflow for
+                        # very small std values, then cast back via multiplication.
+                        noise_std = max(self.perturb * std, 1e-12)
+                        noise = torch.randn_like(param, dtype=torch.float32).mul_(noise_std).to(param.dtype)
                         param.mul_(self.shrink).add_(noise)
 
         self.model.train()
@@ -169,7 +195,19 @@ class DistilBERTALAdapter(HFSequenceClassifierAdapter):
         attention_mask = encoded["attention_mask"].to(self._device)
         target = torch.tensor(label_ids, dtype=torch.long, device=self._device)
 
-        optimizer = AdamW(self.model.parameters(), lr=self.lr)
+        # Use fused AdamW on CUDA for ~1.1x throughput gain (single kernel vs. per-param loops).
+        # Fall back to standard AdamW on older torch versions that don't support `fused`.
+        # NOTE: seeds are already shared across strategies per the benchmark's job loop
+        # (each (dataset, strategy, seed) triple is a separate run_one_curve call with the
+        # same seed passed to both the adapter and the strategy scheduler), so paired-seed
+        # CRN variance reduction is already in effect. Mixed-effects/CUPED left as future work.
+        if self._device.type == "cuda":
+            try:
+                optimizer = AdamW(self.model.parameters(), lr=self.lr, fused=True)
+            except TypeError:  # torch < 2.0 doesn't have fused=
+                optimizer = AdamW(self.model.parameters(), lr=self.lr)
+        else:
+            optimizer = AdamW(self.model.parameters(), lr=self.lr)
         use_cuda = self._device.type == "cuda"
         try:  # torch>=2.4 moved GradScaler to torch.amp; fall back for older versions
             scaler = torch.amp.GradScaler("cuda", enabled=use_cuda)

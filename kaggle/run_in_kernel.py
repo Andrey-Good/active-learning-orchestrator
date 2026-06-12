@@ -29,8 +29,18 @@ BRANCH = "benchmark/transformer-al-pilot"
 CLONE_DIR = "/tmp/al_repo"
 OUT = "/kaggle/working/out"
 
+# Sentinel constants injected at push time by push_and_run.py.
+# push_and_run.py replaces "= None" with "= <value>" so per-kernel config is baked into
+# the uploaded code file — Kaggle script kernels only upload the code file, not sidecar .txt
+# files, so sidecar-based config silently reverts to default. These sentinels fix that.
+_PRESET_OVERRIDE = None  # e.g. "v2_phase0"
+_PROTOCOLS_OVERRIDE = None  # e.g. "cold"
+
 
 def _resolve_preset() -> str:
+    # Priority: baked override > sidecar txt > env > default.
+    if _PRESET_OVERRIDE is not None:
+        return str(_PRESET_OVERRIDE)
     sibling = Path(__file__).resolve().parent / "al_preset.txt"
     if sibling.exists():
         value = sibling.read_text(encoding="utf-8").strip()
@@ -40,13 +50,18 @@ def _resolve_preset() -> str:
 
 
 def _resolve_protocols() -> list[str]:
-    """Which training protocols to run, in order. Default: both. A sibling ``al_protocols.txt``
-    (or ``AL_PROTOCOLS`` env) with e.g. ``cold`` lets us split cold/warm across two CONCURRENT
-    kernels (each using both T4s) to halve wall-clock with no quality cost."""
+    """Which training protocols to run, in order. Default: both. A baked ``_PROTOCOLS_OVERRIDE``
+    (or sibling ``al_protocols.txt``, or ``AL_PROTOCOLS`` env) with e.g. ``cold`` lets us split
+    cold/warm across two CONCURRENT kernels (each using both T4s) to halve wall-clock with no
+    quality cost.  Priority: baked override > sidecar txt > env > default."""
+    # Priority: baked override > sidecar txt > env > default.
     raw = ""
-    sibling = Path(__file__).resolve().parent / "al_protocols.txt"
-    if sibling.exists():
-        raw = sibling.read_text(encoding="utf-8").strip()
+    if _PROTOCOLS_OVERRIDE is not None:
+        raw = str(_PROTOCOLS_OVERRIDE)
+    if not raw:
+        sibling = Path(__file__).resolve().parent / "al_protocols.txt"
+        if sibling.exists():
+            raw = sibling.read_text(encoding="utf-8").strip()
     if not raw:
         raw = os.environ.get("AL_PROTOCOLS", "cold,warm")
     protocols = [p.strip() for p in raw.split(",") if p.strip() in ("cold", "warm")]
@@ -123,15 +138,49 @@ def main() -> None:
             rc = runp([sys.executable, bench, "--preset", preset, "--output-dir", OUT,
                        "--protocol", protocol, "--shard-index", "0", "--shard-count", "1"])
         else:
+            # Each shard captures its own stdout+stderr to a per-shard log so tracebacks are
+            # never lost.  Shards still run in parallel (no serialization).
+            # On any non-zero exit, the tail of that shard's log is appended to run.log so a
+            # single pulled run.log shows the error without needing to fetch extra files.
             procs = []
+            shard_logs = []
             for idx in range(n_gpus):
                 env = os.environ.copy()
                 env["CUDA_VISIBLE_DEVICES"] = str(idx)
-                procs.append(subprocess.Popen(
+                shard_log_path = Path(OUT) / f"shard_{protocol}_{idx}.log"
+                shard_logs.append(shard_log_path)
+                shard_log_fh = open(shard_log_path, "w", encoding="utf-8")
+                procs.append((subprocess.Popen(
                     [sys.executable, bench, "--preset", preset, "--output-dir", OUT,
                      "--protocol", protocol,
-                     "--shard-index", str(idx), "--shard-count", str(n_gpus)], env=env))
-            rc = 0 if all(p.wait() == 0 for p in procs) else 1
+                     "--shard-index", str(idx), "--shard-count", str(n_gpus)],
+                    env=env,
+                    stdout=shard_log_fh,
+                    stderr=subprocess.STDOUT,
+                ), shard_log_fh))
+            rc = 0
+            for idx, (p, fh) in enumerate(procs):
+                exit_code = p.wait()
+                fh.close()
+                shard_log_path = shard_logs[idx]
+                # Stream shard output to console for live Kaggle log visibility.
+                shard_content = shard_log_path.read_text(encoding="utf-8", errors="replace")
+                sys.stdout.write(shard_content)
+                log.write(shard_content)
+                log.flush()
+                if exit_code != 0:
+                    rc = 1
+                    # Append shard tail to run.log so the error is immediately visible.
+                    tail_lines = shard_content.splitlines()[-80:]
+                    tail_text = "\n".join(tail_lines)
+                    err_msg = (
+                        f"\n[kernel] === shard {protocol}_{idx} FAILED (exit {exit_code}) — tail ===\n"
+                        f"{tail_text}\n"
+                        f"[kernel] === end shard {protocol}_{idx} tail ===\n"
+                    )
+                    sys.stdout.write(err_msg)
+                    log.write(err_msg)
+                    log.flush()
         if rc != 0:
             msg = f"[kernel] {protocol} pass exited {rc}; continuing to next protocol\n"
             sys.stdout.write(msg); log.write(msg); log.flush()

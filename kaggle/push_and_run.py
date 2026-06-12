@@ -57,13 +57,31 @@ def push_kernel(kaggle: str, username: str, preset: str, slug: str, protocols: s
         shutil.rmtree(kdir)
     kdir.mkdir(parents=True)
     shutil.copy2(REPO / "kaggle" / "run_in_kernel.py", kdir / "run_in_kernel.py")
+    # Also write sidecar .txt files for local/non-Kaggle use (they're ignored by Kaggle script
+    # kernels which only upload the code file, but harmless to keep).
     (kdir / "al_preset.txt").write_text(preset, encoding="utf-8")
     if protocols:
         (kdir / "al_protocols.txt").write_text(protocols, encoding="utf-8")
+    # Bake the preset and protocol into the copied kernel code so Kaggle's script-kernel upload
+    # (code file only, no sidecars) correctly applies per-kernel config.
+    # We replace the sentinel lines that push_and_run.py recognises by their exact form.
+    kernel_code = (kdir / "run_in_kernel.py").read_text(encoding="utf-8")
+    kernel_code = kernel_code.replace(
+        '_PRESET_OVERRIDE = None  # e.g. "v2_phase0"',
+        f'_PRESET_OVERRIDE = {preset!r}  # injected by push_and_run.py',
+    )
+    if protocols:
+        kernel_code = kernel_code.replace(
+            '_PROTOCOLS_OVERRIDE = None  # e.g. "cold"',
+            f'_PROTOCOLS_OVERRIDE = {protocols!r}  # injected by push_and_run.py',
+        )
+    (kdir / "run_in_kernel.py").write_text(kernel_code, encoding="utf-8")
     kernel_id = f"{username}/{slug}"
     (kdir / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_id,
-        "title": "AL Transformer Benchmark",
+        # Title must slugify to the id, else Kaggle 409s when the natural slug collides with an
+        # existing kernel. Use the slug itself as the title.
+        "title": slug,
         "code_file": "run_in_kernel.py",
         "language": "python",
         "kernel_type": "script",
