@@ -24,7 +24,9 @@ from pathlib import Path
 
 REPO_URL = "https://github.com/Andrey-Good/active-learning-orchestrator.git"
 BRANCH = "benchmark/transformer-al-pilot"
-CLONE_DIR = "/kaggle/working/repo"
+# Clone outside /kaggle/working so the kernel OUTPUT (and log pulls) stay small — only our
+# artifacts under OUT are downloaded, not the whole repo tree.
+CLONE_DIR = "/tmp/al_repo"
 OUT = "/kaggle/working/out"
 
 
@@ -75,33 +77,46 @@ def main() -> None:
     Path(OUT).mkdir(parents=True, exist_ok=True)
     _ensure_deps()
 
+    # Tee everything to OUT/run.log so the error is always pullable even when Kaggle's own
+    # log API returns empty for a fast-failing kernel.
+    log_path = Path(OUT) / "run.log"
+    log = open(log_path, "w", encoding="utf-8")
+
+    def runp(cmd: list[str], env: dict | None = None) -> int:
+        log.write("$ " + " ".join(cmd) + "\n"); log.flush()
+        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        for line in proc.stdout:  # type: ignore[union-attr]
+            sys.stdout.write(line)
+            log.write(line)
+            log.flush()
+        return proc.wait()
+
     n_gpus = _gpu_count()
-    print(f"[kernel] branch={BRANCH} gpus={n_gpus} preset={preset}", flush=True)
+    header = f"[kernel] branch={BRANCH} gpus={n_gpus} preset={preset}\n"
+    sys.stdout.write(header); log.write(header); log.flush()
 
     if n_gpus <= 1:
-        subprocess.run(
-            [sys.executable, bench, "--preset", preset, "--output-dir", OUT,
-             "--shard-index", "0", "--shard-count", "1"],
-            check=True,
-        )
+        rc = runp([sys.executable, bench, "--preset", preset, "--output-dir", OUT,
+                   "--shard-index", "0", "--shard-count", "1"])
     else:
         procs = []
         for idx in range(n_gpus):
             env = os.environ.copy()
             env["CUDA_VISIBLE_DEVICES"] = str(idx)
-            procs.append(
-                subprocess.Popen(
-                    [sys.executable, bench, "--preset", preset, "--output-dir", OUT,
-                     "--shard-index", str(idx), "--shard-count", str(n_gpus)],
-                    env=env,
-                )
-            )
-        if any(p.wait() != 0 for p in procs):
-            print("[kernel] WARNING: a shard exited non-zero; merging what completed", flush=True)
-        subprocess.run([sys.executable, bench, "--merge-only", "--output-dir", OUT], check=True)
+            procs.append(subprocess.Popen(
+                [sys.executable, bench, "--preset", preset, "--output-dir", OUT,
+                 "--shard-index", str(idx), "--shard-count", str(n_gpus)], env=env))
+        rc = 0 if all(p.wait() == 0 for p in procs) else 1
+        runp([sys.executable, bench, "--merge-only", "--output-dir", OUT])
 
-    subprocess.run([sys.executable, stats, "--input-dir", OUT], check=True)
-    print("[kernel] done. artifacts in", OUT, flush=True)
+    if rc != 0:
+        msg = f"[kernel] benchmark exited {rc}; running stats on whatever completed\n"
+        sys.stdout.write(msg); log.write(msg); log.flush()
+    runp([sys.executable, stats, "--input-dir", OUT])
+    done = "[kernel] done. artifacts in " + OUT + "\n"
+    sys.stdout.write(done); log.write(done); log.flush()
+    log.close()
 
 
 if __name__ == "__main__":
