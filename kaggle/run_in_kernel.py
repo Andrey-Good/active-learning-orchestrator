@@ -36,7 +36,7 @@ def _resolve_preset() -> str:
         value = sibling.read_text(encoding="utf-8").strip()
         if value:
             return value
-    return os.environ.get("AL_PRESET", "deadline")
+    return os.environ.get("AL_PRESET", "mitigation")
 
 
 def _gpu_count() -> int:

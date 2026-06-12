@@ -66,6 +66,10 @@ def push_kernel(kaggle: str, username: str, preset: str) -> str:
         "kernel_type": "script",
         "is_private": True,
         "enable_gpu": True,
+        # Force a Tesla T4 (sm_75). The default GPU assignment can land on a P100 (sm_60),
+        # which Kaggle's current PyTorch build no longer supports -> CUDA "no kernel image"
+        # crash. Valid machine_shape values: NvidiaTeslaT4 / NvidiaTeslaP100 / Tpu1VmV38.
+        "machine_shape": "NvidiaTeslaT4",
         "enable_internet": True,
         "dataset_sources": [],
         "competition_sources": [],

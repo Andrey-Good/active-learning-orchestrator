@@ -410,6 +410,18 @@ _PRESETS: dict[str, dict[str, Any]] = {
         "max_train": 2000,
         "max_test": 500,
     },
+    # The repo's cold-start-aware / composite strategies vs random and vanilla entropy, same
+    # protocol as `deadline` so the two runs are directly comparable.
+    "mitigation": {
+        "datasets": ["ag_news", "sst2"],
+        "strategies": ["random", "entropy", "adaptive_uncertainty_diversity",
+                       "class_group_balanced_entropy", "density_weighted_diversity"],
+        "seeds": [13, 21, 34],
+        "budgets": [50, 100, 200, 400],
+        "initial_seed_size": 20,
+        "max_train": 2000,
+        "max_test": 500,
+    },
 }
 
 _METRIC_FIELDS = [
