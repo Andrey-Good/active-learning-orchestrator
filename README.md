@@ -299,8 +299,20 @@ Benchmark docs:
 - [docs/BENCHMARK_EVIDENCE.md](docs/BENCHMARK_EVIDENCE.md)
 - [benchmarks/results/current_benchmark_report.md](benchmarks/results/current_benchmark_report.md)
 
+Current promoted capped-real evidence:
+
+- Artifact: `benchmarks/results/runtime/quality_gate_adaptive_budget_curve_20260612/`
+- Scope: `real_medium`, datasets `banking77` and `dair_ai_emotion`, seeds `13,21,34`, budgets `50,100,200,300,400`, train cap `500`, test cap `250`.
+- Quality gate: `PASS` with complete random baselines, three-seed standard-real coverage, calibration metrics, full-train references, runtime summaries, and differentiated non-random selections.
+- Banking77 final budget: `adaptive_uncertainty_diversity` reached `0.3199` macro-F1 at budget `400`, matching the capped full-train reference `0.3191` and beating random `0.2820` by `+0.0379`.
+- Banking77 mid-budget: adaptive macro-F1 at budget `200` was `0.1962` versus random `0.1468`, a `+0.0493` lift.
+- DAIR.AI Emotion final budget: adaptive reached `0.1744` macro-F1, within `0.0072` of capped full train `0.1816`; `badge` was the strongest final active strategy at `0.1908`, `+0.0181` over random.
+- Slide-prep source: [benchmarks/results/sdk_metrics_slide_dossier_20260612.md](benchmarks/results/sdk_metrics_slide_dossier_20260612.md).
+
 Latest local validation in this worktree:
 
+- `uv run pytest tests/test_adaptive_strategy.py tests/test_quality_gate_report.py tests/test_sdk_first_benchmark_embedding_diagnostics.py -q` -> `39 passed`
+- `uv run ruff check benchmarks/quality_gate_report.py benchmarks/sdk_first_benchmark.py src/active_learning_sdk/strategies/adaptive.py tests/test_adaptive_strategy.py` -> `All checks passed!`
 - `uv run pytest -q` -> `623 passed, 1 skipped`
 - `uv run mypy src` -> `Success: no issues found in 38 source files`
 - `uv run ruff check .` -> `All checks passed!`

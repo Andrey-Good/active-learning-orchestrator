@@ -53,7 +53,7 @@ uv run python benchmarks/sdk_first_benchmark.py --preset real_full --datasets da
 Real presets use cumulative budgets of `100,200,300,500,800` by default. `real_smoke` is smoke-only local evidence and may use one seed for quick probes. `real_medium` and `real_full` are Stage 11 standard-real presets: they require at least three distinct seeds, for example `--seeds 13,21,34`, plus explicit positive `--max-train-samples` and `--max-test-samples` caps. `--allow-uncapped-real-standard` exists only for explicit local exploratory runs; artifacts produced with that override are marked `local_uncapped_override`, not standard evidence.
 
 - `real_smoke`: `banking77`, with the small smoke strategy subset.
-- `real_medium`: `banking77` and `clinc_oos_imbalanced`, with random, uncertainty, class/group-balanced entropy, and CoreSet coverage.
+- `real_medium`: `banking77` and `clinc_oos_imbalanced`, with random, uncertainty, class/group-balanced entropy, and CoreSet coverage by default. Promoted standard evidence may override datasets and budgets explicitly when the manifest records the full command.
 - `real_full`: all registered real datasets and all strategy names exposed by `strategy_specs()`.
 
 Registered real datasets:
@@ -62,6 +62,8 @@ Registered real datasets:
 - `clinc_oos_plus`: Hugging Face `clinc/clinc_oos`, config `plus`, splits `train`, `validation`, `test`, text column `text`, label column `intent`.
 - `banking77`: Hugging Face `mteb/banking77`, config `default`, splits `train`, `test`, text column `text`, raw label column `label`, semantic label-name column `label_text`.
 - `dair_ai_emotion`: Hugging Face `dair-ai/emotion`, config `split`, splits `train`, `validation`, `test`, text column `text`, label column `label`; intended as an easier sanity/coverage dataset.
+- `ag_news`: Hugging Face `ag_news`, config `default`, splits `train`, `test`, text column `text`, label column `label`.
+- `sst2`: Hugging Face `SetFit/sst2`, config `default`, splits `train`, `test`, text column `text`, label column `label`, semantic label-name column `label_text`. The benchmark uses this source because the canonical GLUE SST-2 test split is unlabeled.
 
 The real loader requires the optional `datasets` package at runtime. Unit tests monkeypatch the loader and do not download from Hugging Face.
 
@@ -132,10 +134,16 @@ Native rows include `modal_native_entropy`, `modal_native_margin`, `modal_native
 
 ## Current Accepted Findings
 
-The accepted diagnostic benchmark evidence is summarized in `benchmarks/results/current_benchmark_report.md`. The current promoted Stage 2C smoke is `benchmarks/results/stage2_smoke_current/`. The retained Stage 9 evidence directories are `benchmarks/results/stage9_final/` and `benchmarks/results/stage9_reference/`.
+The accepted diagnostic benchmark evidence is summarized in `benchmarks/results/current_benchmark_report.md`. The current promoted capped-real standard replay is `benchmarks/results/runtime/quality_gate_adaptive_budget_curve_20260612/`. The current promoted Stage 2C smoke is `benchmarks/results/stage2_smoke_current/`. The retained Stage 9 evidence directories are `benchmarks/results/stage9_final/` and `benchmarks/results/stage9_reference/`.
 
 Headline conclusions:
 
+- 2026-06-12 capped-real standard command: `uv run --extra benchmarks python benchmarks/sdk_first_benchmark.py --preset real_medium --datasets banking77,dair_ai_emotion --strategies random,adaptive_uncertainty_diversity,entropy,class_group_balanced_entropy,badge --budgets 50,100,200,300,400 --seeds 13,21,34 --initial-seed-size 9 --max-train-samples 500 --max-test-samples 250 --output-dir benchmarks/results/runtime/quality_gate_adaptive_budget_curve_20260612 --overwrite`.
+- 2026-06-12 capped-real quality gate: PASS, schema version `2`, evidence category `sdk_native_capped_real_dataset`, with `150` metrics rows and `6` full-train reference rows.
+- Banking77 final budget: `adaptive_uncertainty_diversity` reached `0.3199` macro-F1 at budget `400`, matching capped full train `0.3191` and beating random `0.2820` by `+0.0379`.
+- Banking77 mid-budget: adaptive macro-F1 at budget `200` was `0.1962` versus random `0.1468`, a `+0.0493` lift.
+- DAIR.AI Emotion final budget: adaptive reached `0.1744` macro-F1, within `0.0072` of capped full train `0.1816`; `badge` was strongest at final budget with `0.1908`, `+0.0181` over random.
+- `adaptive_uncertainty_diversity` mean macro-F1 AULC lift versus random is `+0.0196`; final-budget non-loss rate versus random is `0.8333`.
 - Stage 2C quality-gate parser check: `uv run pytest tests/test_quality_gate_report.py -q` -> `8 passed`.
 - Stage 2C smoke command: `uv run python benchmarks/sdk_first_benchmark.py --preset smoke --output-dir benchmarks/results/stage2_smoke_current --overwrite` -> `30` metrics rows, `30` selection rows, and `30` stop-policy rows.
 - Stage 2C quality gate command: `uv run python benchmarks/quality_gate_report.py benchmarks/results/stage2_smoke_current` -> PASS, schema version `2`, evidence category `sdk_native_synthetic_diagnostic`.
