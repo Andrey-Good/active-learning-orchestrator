@@ -504,6 +504,26 @@ _PRESETS: dict[str, dict[str, Any]] = {
         "max_train": 2000,
         "max_test": 1000,
     },
+    # Low-budget regime: small initial seed + fine grid spanning the phase transition.
+    # Motivated by the cold v2_phase0 result: (a) AL gains concentrate at low budget on imbalanced
+    # data, and (b) the repo's cold-start-aware strategies only engage when labeled <
+    # max(32, 8*n_classes) — seed=40 in v2_phase0 started ABOVE that, so adaptive_uncertainty_diversity
+    # silently reduced to entropy. seed=8 + budgets <=48 finally exercise those guards, and the
+    # fuller class-aware roster (class_balanced_entropy, group_diverse_entropy) is included.
+    "v2_lowbudget": {
+        "datasets": ["ag_news_imb", "ag_news", "trec6"],
+        "strategies": [
+            "random", "entropy", "margin", "badge", "coreset_kcenter",
+            "class_balanced_entropy", "class_group_balanced_entropy",
+            "group_diverse_entropy", "adaptive_uncertainty_diversity",
+            "density_weighted_diversity",
+        ],
+        "seeds": [13, 21, 34, 42, 55, 73, 89, 101, 144, 167, 233, 377, 610, 987, 1597],
+        "budgets": [12, 16, 24, 32, 48, 64, 100, 150, 200],
+        "initial_seed_size": 8,
+        "max_train": 2000,
+        "max_test": 1000,
+    },
     "deadline": {
         "datasets": ["ag_news", "sst2"],
         "strategies": ["random", "entropy", "margin", "least_confidence", "coreset_kcenter", "badge"],
