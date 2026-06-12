@@ -59,13 +59,32 @@ from active_learning_sdk import (  # noqa: E402
 )
 
 
-def _make_adapter(kind: str, labels: Sequence[str], *, seed: int, model_name: str, device: str | None) -> Any:
-    """Adapter factory. ``distilbert`` = real transformer; ``fake`` = numpy stub for offline smoke."""
+def _make_adapter(
+    kind: str,
+    labels: Sequence[str],
+    *,
+    seed: int,
+    model_name: str,
+    device: str | None,
+    protocol: str = "cold",
+) -> Any:
+    """Adapter factory.  ``distilbert`` = real transformer; ``fake`` = numpy stub for offline smoke.
+
+    ``protocol`` is forwarded to :class:`DistilBERTALAdapter` as ``warm_start=(protocol=="warm")``.
+    The ``fake`` adapter ignores the flag (it is a no-op there).
+    """
     if kind == "distilbert":
         from active_learning_sdk.adapters.transformer import DistilBERTALAdapter
 
-        return DistilBERTALAdapter(labels, model_name=model_name, seed=seed, device=device)
+        return DistilBERTALAdapter(
+            labels,
+            model_name=model_name,
+            seed=seed,
+            device=device,
+            warm_start=(protocol == "warm"),
+        )
     if kind == "fake":
+        # warm_start is a no-op for the offline stub — just accept and ignore.
         return HashingNearestCentroidAdapter(labels, seed=seed)
     raise ValueError(f"unknown adapter kind: {kind}")
 
@@ -210,10 +229,18 @@ class Provider:
 # NOTE: use Parquet-backed mirrors (SetFit org) — Kaggle's current `datasets` library no longer
 # supports legacy script-based datasets (e.g. bare "trec"/"ag_news" raise "Dataset scripts are no
 # longer supported"). SetFit datasets expose columns: text, label (int), label_text.
+#
+# TREC-6 mirror: SetFit/TREC-QC (Parquet-backed, no legacy scripts). VERIFIED via the HF
+# datasets-server: columns include "text", "label" (FINE-grained, ~50 classes) and
+# "label_coarse" (the 6-way coarse label). We want the COARSE label for TREC-6, so the label
+# column is "label_coarse" (NOT "label", which would silently yield a 50-class task). Splits:
+# train / test.
 _HF_DATASETS: dict[str, tuple[str, str | None, str, str, str, str]] = {
     "ag_news": ("SetFit/ag_news", None, "text", "label", "train", "test"),
     "sst2": ("SetFit/sst2", None, "text", "label", "train", "validation"),
     "emotion": ("SetFit/emotion", None, "text", "label", "train", "test"),
+    # TREC-6: 6-way coarse-grained question classification (use label_coarse, not label).
+    "trec6": ("SetFit/TREC-QC", None, "text", "label_coarse", "train", "test"),
 }
 
 _DATASET_SEED = 12345  # fixes the (capped) pool so it is identical across AL seeds
@@ -278,9 +305,59 @@ def build_synthetic_dataset(name: str = "synthetic") -> Dataset:
     return Dataset(name=name, labels=labels, samples=samples)
 
 
+def make_imbalanced(dataset: Dataset, ratios: Sequence[float]) -> Dataset:
+    """Return a copy of *dataset* with train samples subsampled to *ratios* per class.
+
+    Only the train split is rebalanced; the test split is left untouched.  The subsampling is
+    deterministic (seeded by :data:`_DATASET_SEED`) so results are reproducible across AL seeds.
+
+    *ratios* need not sum to 1 — they are treated as relative frequencies.  The total number of
+    kept train samples is set so that the majority class (ratio index 0) retains as many samples
+    as the original pool can provide; minority classes are scaled down proportionally.
+    """
+    rng = random.Random(_DATASET_SEED)
+    train = [s for s in dataset.samples if s.split == "train"]
+    test = [s for s in dataset.samples if s.split == "test"]
+
+    by_label: dict[str, list[Sample]] = defaultdict(list)
+    for s in train:
+        by_label[s.label].append(s)
+    for ids in by_label.values():
+        ids.sort(key=lambda s: s.sample_id)  # deterministic order before shuffle
+
+    sorted_labels = sorted(by_label.keys(), key=lambda x: int(x) if x.isdigit() else x)
+    # Normalise ratios to the number of labels actually present.
+    n_labels = len(sorted_labels)
+    effective_ratios = list(ratios[:n_labels]) + [ratios[-1]] * max(0, n_labels - len(ratios))
+    total_ratio = sum(effective_ratios)
+    effective_ratios = [r / total_ratio for r in effective_ratios]
+
+    # The majority class determines the reference count (its ratio is the largest).
+    max_ratio = max(effective_ratios)
+    majority_label = sorted_labels[effective_ratios.index(max_ratio)]
+    majority_count = len(by_label[majority_label])
+
+    kept: list[Sample] = []
+    for label, ratio in zip(sorted_labels, effective_ratios):
+        samples_for_label = list(by_label[label])
+        rng.shuffle(samples_for_label)
+        target = max(1, round(majority_count * ratio / max_ratio))
+        kept.extend(samples_for_label[:target])
+
+    return Dataset(name=dataset.name, labels=dataset.labels, samples=kept + test)
+
+
 def load_dataset_by_name(name: str, max_train: int | None, max_test: int | None) -> Dataset:
     if name == "synthetic":
         return build_synthetic_dataset()
+    if name == "ag_news_imb":
+        # Derived from ag_news with a deterministic class-imbalance transform on the train pool.
+        # Class frequencies: [0.7, 0.1, 0.1, 0.1] (class 0 dominates; others equal minority).
+        # Test split is kept balanced (untouched).
+        base = load_hf_dataset("ag_news", max_train, max_test)
+        imb = make_imbalanced(base, ratios=[0.7, 0.1, 0.1, 0.1])
+        # Rename so dataset column reads "ag_news_imb" not "ag_news".
+        return Dataset(name="ag_news_imb", labels=imb.labels, samples=imb.samples)
     return load_hf_dataset(name, max_train, max_test)
 
 
@@ -316,6 +393,7 @@ def run_one_curve(
     model_name: str,
     device: str | None,
     adapter_kind: str = "distilbert",
+    protocol: str = "cold",
 ) -> list[dict[str, Any]]:
     sample_by_id = {s.sample_id: s for s in dataset.samples}
     train_ids = sorted(s.sample_id for s in dataset.samples if s.split == "train")
@@ -329,7 +407,10 @@ def run_one_curve(
 
     labeled_ids = choose_initial_seed(train_samples, dataset.labels, initial_seed_size, seed)
     provider = Provider([s for s in dataset.samples if s.split == "train"])
-    model = _make_adapter(adapter_kind, dataset.labels, seed=seed, model_name=model_name, device=device)
+    model = _make_adapter(
+        adapter_kind, dataset.labels,
+        seed=seed, model_name=model_name, device=device, protocol=protocol,
+    )
     scheduler = StrategyScheduler(SchedulerConfig(mode="single", strategy=strategy_name))
     label_schema = LabelSchema(task="text_classification", labels=dataset.labels)
 
@@ -374,6 +455,7 @@ def run_one_curve(
                 "dataset": dataset.name,
                 "strategy": strategy_name,
                 "seed": seed,
+                "protocol": protocol,
                 "budget": len(labeled_ids),
                 "requested_budget": budget,
                 "initial_seed_size": initial_seed_size,
@@ -401,6 +483,22 @@ _PRESETS: dict[str, dict[str, Any]] = {
         "max_train": None,
         "max_test": None,
     },
+    # Phase 0 power-correct re-run: 15 seeds, 8-point budget grid, 4 datasets (incl. imbalanced),
+    # all production strategies.  Run with --protocol cold and --protocol warm separately.
+    "v2_phase0": {
+        "datasets": ["ag_news", "sst2", "trec6", "ag_news_imb"],
+        "strategies": [
+            "random", "entropy", "margin", "least_confidence",
+            "coreset_kcenter", "badge",
+            "adaptive_uncertainty_diversity", "class_group_balanced_entropy",
+            "density_weighted_diversity",
+        ],
+        "seeds": [13, 21, 34, 42, 55, 73, 89, 101, 144, 167, 233, 377, 610, 987, 1597],
+        "budgets": [20, 50, 100, 150, 200, 300, 400, 800],
+        "initial_seed_size": 40,
+        "max_train": 2000,
+        "max_test": 1000,
+    },
     "deadline": {
         "datasets": ["ag_news", "sst2"],
         "strategies": ["random", "entropy", "margin", "least_confidence", "coreset_kcenter", "badge"],
@@ -425,7 +523,7 @@ _PRESETS: dict[str, dict[str, Any]] = {
 }
 
 _METRIC_FIELDS = [
-    "dataset", "strategy", "seed", "budget", "requested_budget", "initial_seed_size",
+    "dataset", "strategy", "seed", "protocol", "budget", "requested_budget", "initial_seed_size",
     "accuracy", "macro_f1", "weighted_f1", "balanced_accuracy", "macro_recall",
     "selected_count", "runtime_seconds",
 ]
@@ -452,13 +550,19 @@ def _append_rows(path: Path, rows: Sequence[dict[str, Any]]) -> None:
 
 def _merge(output_dir: Path) -> None:
     merged = output_dir / "metrics.csv"
-    shard_files = sorted(output_dir.glob("metrics_shard*.csv"))
+    # Collect all per-protocol and per-shard metrics files (but not metrics.csv itself).
+    shard_files = sorted(
+        f for f in output_dir.glob("metrics*.csv")
+        if f.name != "metrics.csv"
+    )
     seen: set[tuple] = set()
     rows: list[dict[str, str]] = []
     for f in shard_files:
         with f.open(newline="", encoding="utf-8") as fh:
             for row in csv.DictReader(fh):
-                key = (row["dataset"], row["strategy"], row["seed"], row["budget"])
+                # Include protocol in dedup key so cold and warm rows never collide.
+                key = (row["dataset"], row["strategy"], row["seed"],
+                       row.get("protocol", "cold"), row["budget"])
                 if key in seen:
                     continue
                 seen.add(key)
@@ -485,6 +589,14 @@ def main() -> None:
     parser.add_argument("--strategies", default=None, help="comma-separated override")
     parser.add_argument("--seeds", default=None, help="comma-separated override")
     parser.add_argument("--merge-only", action="store_true")
+    parser.add_argument(
+        "--protocol", choices=["cold", "warm"], default="cold",
+        help="'cold' = fresh model each round (default); 'warm' = retain weights with shrink-and-perturb",
+    )
+    parser.add_argument(
+        "--initial-seed-size", type=int, default=None,
+        help="Override the preset's initial_seed_size (e.g. for ablation)",
+    )
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -501,8 +613,12 @@ def main() -> None:
         cfg["strategies"] = args.strategies.split(",")
     if args.seeds:
         cfg["seeds"] = [int(x) for x in args.seeds.split(",")]
+    if args.initial_seed_size is not None:
+        cfg["initial_seed_size"] = args.initial_seed_size
 
-    suffix = "" if args.shard_count <= 1 else f"_shard{args.shard_index}"
+    protocol = args.protocol  # "cold" | "warm"
+    # Include protocol in the shard file name so cold and warm can write to the same output dir.
+    suffix = f"_{protocol}" if args.shard_count <= 1 else f"_{protocol}_shard{args.shard_index}"
     metrics_path = output_dir / f"metrics{suffix}.csv"
     checkpoint_path = output_dir / f"checkpoint{suffix}.json"
 
@@ -517,7 +633,8 @@ def main() -> None:
     dataset_cache: dict[str, Dataset] = {}
     overall_start = time.perf_counter()
     for ds_name, strat, seed in my_jobs:
-        job_key = f"{ds_name}|{strat}|{seed}"
+        # Protocol is part of the job key so cold and warm runs checkpoint independently.
+        job_key = f"{ds_name}|{strat}|{seed}|{protocol}"
         if job_key in done:
             continue
         if ds_name not in dataset_cache:
@@ -527,7 +644,7 @@ def main() -> None:
         t0 = time.perf_counter()
         rows = run_one_curve(
             dataset, strat, cfg["budgets"], seed, cfg["initial_seed_size"],
-            args.model_name, args.device, adapter_kind=args.adapter,
+            args.model_name, args.device, adapter_kind=args.adapter, protocol=protocol,
         )
         _append_rows(metrics_path, rows)
         done.add(job_key)
@@ -541,9 +658,8 @@ def main() -> None:
 
     print(f"[shard {args.shard_index}] complete in {time.perf_counter() - overall_start:.1f}s")
     if args.shard_count <= 1:
-        # single-process convenience: also emit a canonical metrics.csv copy
-        if metrics_path.name != "metrics.csv":
-            _merge(output_dir)
+        # single-process convenience: merge all protocol files into a canonical metrics.csv
+        _merge(output_dir)
 
 
 if __name__ == "__main__":

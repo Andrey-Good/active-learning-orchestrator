@@ -50,14 +50,17 @@ def run(cmd: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, check=False, text=True, capture_output=True)
 
 
-def push_kernel(kaggle: str, username: str, preset: str) -> str:
-    kdir = REPO / "kaggle" / "_build" / "kernel"
+def push_kernel(kaggle: str, username: str, preset: str, slug: str, protocols: str) -> str:
+    # Separate build dir per slug so two concurrent kernels don't clobber each other's metadata.
+    kdir = REPO / "kaggle" / "_build" / slug
     if kdir.exists():
         shutil.rmtree(kdir)
     kdir.mkdir(parents=True)
     shutil.copy2(REPO / "kaggle" / "run_in_kernel.py", kdir / "run_in_kernel.py")
     (kdir / "al_preset.txt").write_text(preset, encoding="utf-8")
-    kernel_id = f"{username}/{KERNEL_SLUG}"
+    if protocols:
+        (kdir / "al_protocols.txt").write_text(protocols, encoding="utf-8")
+    kernel_id = f"{username}/{slug}"
     (kdir / "kernel-metadata.json").write_text(json.dumps({
         "id": kernel_id,
         "title": "AL Transformer Benchmark",
@@ -100,6 +103,8 @@ def main() -> None:
     parser.add_argument("--username", default=None)
     parser.add_argument("--kaggle-bin", default="kaggle")
     parser.add_argument("--preset", default="deadline")
+    parser.add_argument("--slug", default=KERNEL_SLUG, help="Kaggle kernel slug (unique per concurrent run)")
+    parser.add_argument("--protocols", default="", help="comma list: cold / warm / cold,warm (default: kernel decides = both)")
     parser.add_argument("--poll-seconds", type=int, default=120)
     parser.add_argument("--no-wait", action="store_true")
     parser.add_argument("--results-dir", default=str(REPO / "kaggle" / "results"))
@@ -109,7 +114,7 @@ def main() -> None:
     print(f"[auth] kaggle username: {username}")
     # On Windows the CLI is a .bat shim; subprocess needs its full resolved path.
     kaggle_bin = shutil.which(args.kaggle_bin) or args.kaggle_bin
-    kernel_id = push_kernel(kaggle_bin, username, args.preset)
+    kernel_id = push_kernel(kaggle_bin, username, args.preset, args.slug, args.protocols)
     if args.no_wait:
         print(f"pushed. watch: https://www.kaggle.com/code/{kernel_id}")
         return

@@ -36,7 +36,21 @@ def _resolve_preset() -> str:
         value = sibling.read_text(encoding="utf-8").strip()
         if value:
             return value
-    return os.environ.get("AL_PRESET", "mitigation")
+    return os.environ.get("AL_PRESET", "v2_phase0")
+
+
+def _resolve_protocols() -> list[str]:
+    """Which training protocols to run, in order. Default: both. A sibling ``al_protocols.txt``
+    (or ``AL_PROTOCOLS`` env) with e.g. ``cold`` lets us split cold/warm across two CONCURRENT
+    kernels (each using both T4s) to halve wall-clock with no quality cost."""
+    raw = ""
+    sibling = Path(__file__).resolve().parent / "al_protocols.txt"
+    if sibling.exists():
+        raw = sibling.read_text(encoding="utf-8").strip()
+    if not raw:
+        raw = os.environ.get("AL_PROTOCOLS", "cold,warm")
+    protocols = [p.strip() for p in raw.split(",") if p.strip() in ("cold", "warm")]
+    return protocols or ["cold", "warm"]
 
 
 def _gpu_count() -> int:
@@ -93,25 +107,41 @@ def main() -> None:
         return proc.wait()
 
     n_gpus = _gpu_count()
-    header = f"[kernel] branch={BRANCH} gpus={n_gpus} preset={preset}\n"
+    protocols = _resolve_protocols()
+    header = f"[kernel] branch={BRANCH} gpus={n_gpus} preset={preset} protocols={protocols}\n"
     sys.stdout.write(header); log.write(header); log.flush()
 
-    if n_gpus <= 1:
-        rc = runp([sys.executable, bench, "--preset", preset, "--output-dir", OUT,
-                   "--shard-index", "0", "--shard-count", "1"])
-    else:
-        procs = []
-        for idx in range(n_gpus):
-            env = os.environ.copy()
-            env["CUDA_VISIBLE_DEVICES"] = str(idx)
-            procs.append(subprocess.Popen(
-                [sys.executable, bench, "--preset", preset, "--output-dir", OUT,
-                 "--shard-index", str(idx), "--shard-count", str(n_gpus)], env=env))
-        rc = 0 if all(p.wait() == 0 for p in procs) else 1
-        runp([sys.executable, bench, "--merge-only", "--output-dir", OUT])
+    # Run the selected protocol(s) into the same OUT dir.
+    # The protocol column in each row distinguishes passes.
+    # Each protocol gets its own per-protocol shard files; --merge-only combines all of them
+    # into a single metrics.csv after all passes complete.
+    overall_rc = 0
+    for protocol in protocols:
+        proto_header = f"[kernel] === protocol={protocol} ===\n"
+        sys.stdout.write(proto_header); log.write(proto_header); log.flush()
+        if n_gpus <= 1:
+            rc = runp([sys.executable, bench, "--preset", preset, "--output-dir", OUT,
+                       "--protocol", protocol, "--shard-index", "0", "--shard-count", "1"])
+        else:
+            procs = []
+            for idx in range(n_gpus):
+                env = os.environ.copy()
+                env["CUDA_VISIBLE_DEVICES"] = str(idx)
+                procs.append(subprocess.Popen(
+                    [sys.executable, bench, "--preset", preset, "--output-dir", OUT,
+                     "--protocol", protocol,
+                     "--shard-index", str(idx), "--shard-count", str(n_gpus)], env=env))
+            rc = 0 if all(p.wait() == 0 for p in procs) else 1
+        if rc != 0:
+            msg = f"[kernel] {protocol} pass exited {rc}; continuing to next protocol\n"
+            sys.stdout.write(msg); log.write(msg); log.flush()
+            overall_rc = rc
 
-    if rc != 0:
-        msg = f"[kernel] benchmark exited {rc}; running stats on whatever completed\n"
+    # Merge all protocol + shard files into one canonical metrics.csv.
+    runp([sys.executable, bench, "--merge-only", "--output-dir", OUT])
+
+    if overall_rc != 0:
+        msg = f"[kernel] one or more passes failed; running stats on whatever completed\n"
         sys.stdout.write(msg); log.write(msg); log.flush()
     runp([sys.executable, stats, "--input-dir", OUT])
     done = "[kernel] done. artifacts in " + OUT + "\n"

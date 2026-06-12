@@ -53,6 +53,8 @@ class DistilBERTALAdapter(HFSequenceClassifierAdapter):
         eval_batch_size: int = 64,
         max_length: int = 128,
         warm_start: bool = False,
+        shrink: float = 0.9,
+        perturb: float = 0.01,
         embed_mode: str = "mean",
         device: str | None = None,
     ) -> None:
@@ -77,6 +79,8 @@ class DistilBERTALAdapter(HFSequenceClassifierAdapter):
         self.eval_batch_size = int(eval_batch_size)
         self.max_length = int(max_length)
         self.warm_start = bool(warm_start)
+        self.shrink = float(shrink)
+        self.perturb = float(perturb)
         self.embed_mode = embed_mode
 
         if device is not None:
@@ -143,6 +147,21 @@ class DistilBERTALAdapter(HFSequenceClassifierAdapter):
 
         if self.model is None or not self.warm_start:
             self.model = self._build_model()  # cold restart: fresh weights every round
+        else:
+            # Warm path: model already exists.  Apply shrink-and-perturb so the optimizer
+            # escapes local minima without fully discarding the prior fine-tune.
+            # w <- shrink*w + N(0, perturb * std(w)), seeded deterministically per round.
+            import torch  # type: ignore
+
+            gen = torch.Generator().manual_seed(self.seed + self._round)
+            with torch.no_grad():
+                for param in self.model.parameters():
+                    if param.requires_grad:
+                        std = float(param.std()) if param.numel() > 1 else 0.0
+                        noise = torch.zeros_like(param).normal_(
+                            mean=0.0, std=max(self.perturb * std, 1e-12), generator=gen
+                        )
+                        param.mul_(self.shrink).add_(noise)
 
         self.model.train()
         encoded = self._encode(text_list)

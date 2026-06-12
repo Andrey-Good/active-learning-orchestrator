@@ -43,7 +43,9 @@ def _load_metrics(input_dir: Path) -> list[dict[str, Any]]:
     for f in files:
         with f.open(newline="", encoding="utf-8") as fh:
             for row in csv.DictReader(fh):
-                key = (row["dataset"], row["strategy"], row["seed"], row["budget"])
+                # Include protocol in the dedup key so cold and warm rows never collide.
+                protocol = row.get("protocol") or "cold"
+                key = (row["dataset"], row["strategy"], row["seed"], protocol, row["budget"])
                 if key in seen:
                     continue
                 seen.add(key)
@@ -52,6 +54,7 @@ def _load_metrics(input_dir: Path) -> list[dict[str, Any]]:
                         "dataset": row["dataset"],
                         "strategy": row["strategy"],
                         "seed": int(row["seed"]),
+                        "protocol": protocol,
                         "budget": int(row["budget"]),
                         "requested_budget": int(row.get("requested_budget") or row["budget"]),
                         "macro_f1": float(row["macro_f1"]),
@@ -74,10 +77,15 @@ def _trapezoid_aulc(points: list[tuple[float, float]]) -> float:
     return area / span
 
 
-def _aulc_by_curve(rows: list[dict[str, Any]], metric: str = "macro_f1") -> dict[tuple[str, str, int], float]:
-    grouped: dict[tuple[str, str, int], list[tuple[float, float]]] = defaultdict(list)
+def _aulc_by_curve(
+    rows: list[dict[str, Any]], metric: str = "macro_f1"
+) -> dict[tuple[str, str, str, int], float]:
+    """Return AULC keyed by (dataset, strategy, protocol, seed)."""
+    grouped: dict[tuple[str, str, str, int], list[tuple[float, float]]] = defaultdict(list)
     for r in rows:
-        grouped[(r["dataset"], r["strategy"], r["seed"])].append((float(r["requested_budget"]), float(r[metric])))
+        grouped[(r["dataset"], r["strategy"], r.get("protocol", "cold"), r["seed"])].append(
+            (float(r["requested_budget"]), float(r[metric]))
+        )
     return {key: _trapezoid_aulc(points) for key, points in grouped.items()}
 
 
@@ -91,53 +99,185 @@ def _mean_std(values: list[float]) -> tuple[float, float]:
     return mean, math.sqrt(var)
 
 
-def _final_macro_f1(rows: list[dict[str, Any]]) -> dict[tuple[str, str, int], float]:
-    best_budget: dict[tuple[str, str, int], int] = {}
-    value: dict[tuple[str, str, int], float] = {}
+def _final_macro_f1(rows: list[dict[str, Any]]) -> dict[tuple[str, str, str, int], float]:
+    """Return final macro-F1 keyed by (dataset, strategy, protocol, seed)."""
+    best_budget: dict[tuple[str, str, str, int], int] = {}
+    value: dict[tuple[str, str, str, int], float] = {}
     for r in rows:
-        key = (r["dataset"], r["strategy"], r["seed"])
+        key = (r["dataset"], r["strategy"], r.get("protocol", "cold"), r["seed"])
         if r["budget"] >= best_budget.get(key, -1):
             best_budget[key] = r["budget"]
             value[key] = r["macro_f1"]
     return value
 
 
-def write_alc_summary(rows: list[dict[str, Any]], aulc: dict[tuple[str, str, int], float], out: Path) -> None:
+def _label_efficiency(
+    rows: list[dict[str, Any]],
+    thresholds: tuple[float, ...] = (0.80, 0.90),
+) -> dict[tuple[str, str, str], dict[float, int | None]]:
+    """Per (dataset, strategy, protocol): smallest budget at which mean macro-F1 over seeds
+    reaches *threshold* × max observed mean macro-F1 across all strategies for that dataset/protocol.
+
+    Returns -1 (sentinel) when the threshold is never reached within the observed budget range.
+    """
+    # Build mean macro-F1 per (dataset, strategy, protocol, requested_budget).
+    from collections import defaultdict as _dd
+
+    # Accumulate per-seed values first.
+    by_key: dict[tuple[str, str, str, int], list[float]] = _dd(list)
+    for r in rows:
+        by_key[(r["dataset"], r["strategy"], r.get("protocol", "cold"), r["requested_budget"])].append(
+            r["macro_f1"]
+        )
+    mean_f1: dict[tuple[str, str, str, int], float] = {
+        k: sum(v) / len(v) for k, v in by_key.items()
+    }
+
+    # Max mean macro-F1 across all strategies per (dataset, protocol).
+    max_by_dataset: dict[tuple[str, str], float] = {}
+    for (ds, _strat, proto, _bgt), val in mean_f1.items():
+        key = (ds, proto)
+        max_by_dataset[key] = max(max_by_dataset.get(key, 0.0), val)
+
+    # For each (dataset, strategy, protocol), find the smallest budget reaching the threshold.
+    result: dict[tuple[str, str, str], dict[float, int | None]] = {}
+    combos = {(ds, st, pr) for (ds, st, pr, _) in mean_f1}
+    for ds, strat, proto in combos:
+        dataset_max = max_by_dataset.get((ds, proto), float("nan"))
+        budgets = sorted(b for (d, s, p, b) in mean_f1 if d == ds and s == strat and p == proto)
+        entry: dict[float, int | None] = {}
+        for thr in thresholds:
+            target = thr * dataset_max if not math.isnan(dataset_max) else float("nan")
+            found: int | None = None
+            for b in budgets:
+                if mean_f1.get((ds, strat, proto, b), 0.0) >= target:
+                    found = b
+                    break
+            entry[thr] = found  # None → sentinel for "never reached"
+        result[(ds, strat, proto)] = entry
+    return result
+
+
+def write_alc_summary(
+    rows: list[dict[str, Any]],
+    aulc: dict[tuple[str, str, str, int], float],
+    out: Path,
+) -> None:
     final = _final_macro_f1(rows)
     datasets = sorted({k[0] for k in aulc})
     strategies = sorted({k[1] for k in aulc})
+    protocols = sorted({k[2] for k in aulc})
+
+    label_eff = _label_efficiency(rows)
 
     summary_rows: list[dict[str, Any]] = []
     for ds in datasets:
-        random_aulc_by_seed = {seed: aulc[(ds, RANDOM_BASELINE, seed)]
-                               for (d, s, seed) in aulc if d == ds and s == RANDOM_BASELINE}
-        for strat in strategies:
-            seeds = sorted(seed for (d, s, seed) in aulc if d == ds and s == strat)
-            aulc_vals = [aulc[(ds, strat, seed)] for seed in seeds]
-            final_vals = [final[(ds, strat, seed)] for seed in seeds if (ds, strat, seed) in final]
-            lift_vals = [aulc[(ds, strat, seed)] - random_aulc_by_seed[seed]
-                         for seed in seeds if seed in random_aulc_by_seed]
-            a_mean, a_std = _mean_std(aulc_vals)
-            f_mean, f_std = _mean_std(final_vals)
-            l_mean, l_std = _mean_std(lift_vals)
-            summary_rows.append(
-                {
-                    "dataset": ds,
-                    "strategy": strat,
-                    "n_seeds": len(seeds),
-                    "aulc_macro_f1_mean": round(a_mean, 5),
-                    "aulc_macro_f1_std": round(a_std, 5),
-                    "final_macro_f1_mean": round(f_mean, 5),
-                    "final_macro_f1_std": round(f_std, 5),
-                    "aulc_lift_vs_random_mean": round(l_mean, 5),
-                    "aulc_lift_vs_random_std": round(l_std, 5),
-                }
-            )
+        for proto in protocols:
+            random_aulc_by_seed = {
+                seed: aulc[(ds, RANDOM_BASELINE, proto, seed)]
+                for (d, s, p, seed) in aulc
+                if d == ds and s == RANDOM_BASELINE and p == proto
+            }
+            # Random baseline label-efficiency (for savings calculation).
+            rand_le = label_eff.get((ds, RANDOM_BASELINE, proto), {})
+            for strat in strategies:
+                seeds = sorted(seed for (d, s, p, seed) in aulc if d == ds and s == strat and p == proto)
+                if not seeds:
+                    continue
+                aulc_vals = [aulc[(ds, strat, proto, seed)] for seed in seeds]
+                final_vals = [
+                    final[(ds, strat, proto, seed)]
+                    for seed in seeds
+                    if (ds, strat, proto, seed) in final
+                ]
+                lift_vals = [
+                    aulc[(ds, strat, proto, seed)] - random_aulc_by_seed[seed]
+                    for seed in seeds
+                    if seed in random_aulc_by_seed
+                ]
+                a_mean, a_std = _mean_std(aulc_vals)
+                f_mean, f_std = _mean_std(final_vals)
+                l_mean, l_std = _mean_std(lift_vals)
+                strat_le = label_eff.get((ds, strat, proto), {})
+                # Label-efficiency at 80% and 90% thresholds.
+                le_80 = strat_le.get(0.80)
+                le_90 = strat_le.get(0.90)
+                rand_le_80 = rand_le.get(0.80)
+                rand_le_90 = rand_le.get(0.90)
+                savings_80: int | str = (
+                    (rand_le_80 - le_80)
+                    if (le_80 is not None and rand_le_80 is not None)
+                    else ""
+                )
+                savings_90: int | str = (
+                    (rand_le_90 - le_90)
+                    if (le_90 is not None and rand_le_90 is not None)
+                    else ""
+                )
+                summary_rows.append(
+                    {
+                        "dataset": ds,
+                        "strategy": strat,
+                        "protocol": proto,
+                        "n_seeds": len(seeds),
+                        "aulc_macro_f1_mean": round(a_mean, 5),
+                        "aulc_macro_f1_std": round(a_std, 5),
+                        "final_macro_f1_mean": round(f_mean, 5),
+                        "final_macro_f1_std": round(f_std, 5),
+                        "aulc_lift_vs_random_mean": round(l_mean, 5),
+                        "aulc_lift_vs_random_std": round(l_std, 5),
+                        "label_eff_budget_80pct": le_80 if le_80 is not None else -1,
+                        "label_eff_budget_90pct": le_90 if le_90 is not None else -1,
+                        "label_eff_savings_vs_random_80pct": savings_80,
+                        "label_eff_savings_vs_random_90pct": savings_90,
+                    }
+                )
     _write_csv(out, summary_rows)
     print(f"[alc] wrote {out}")
 
 
-def write_significance(aulc: dict[tuple[str, str, int], float], out: Path) -> None:
+def _benjamini_hochberg(p_values: list[float]) -> list[float]:
+    """Apply Benjamini-Hochberg FDR correction and return adjusted p-values.
+
+    BH(k) = min(1, p_(k) * n / k) with monotonicity enforced (backwards cumulative min).
+    NaN inputs are passed through unchanged.
+    """
+    n = len(p_values)
+    if n == 0:
+        return []
+    # Build (original_index, p_value) pairs, keeping NaN aside.
+    indexed = [(i, p) for i, p in enumerate(p_values) if not math.isnan(p)]
+    nan_indices = {i for i, p in enumerate(p_values) if math.isnan(p)}
+    indexed_sorted = sorted(indexed, key=lambda x: x[1])  # ascending p
+
+    adjusted = [float("nan")] * n
+    # Compute raw BH threshold: p_(k) * n / k  (k = 1-based rank).
+    raw_adj = [p * n / (rank + 1) for rank, (_, p) in enumerate(indexed_sorted)]
+    # Enforce monotonicity: backwards cumulative minimum.
+    for i in range(len(raw_adj) - 2, -1, -1):
+        raw_adj[i] = min(raw_adj[i], raw_adj[i + 1])
+    # Cap at 1.0 and place back in original order.
+    for rank, (orig_idx, _) in enumerate(indexed_sorted):
+        adjusted[orig_idx] = min(1.0, raw_adj[rank])
+    return adjusted
+
+
+def _cohens_d_paired(diffs: list[float]) -> float:
+    """Cohen's d for paired data: mean(diff) / std(diff, ddof=1).  Returns 0 if std is 0."""
+    if len(diffs) < 2:
+        return float("nan")
+    mean = sum(diffs) / len(diffs)
+    var = sum((d - mean) ** 2 for d in diffs) / (len(diffs) - 1)
+    std = math.sqrt(var)
+    if std == 0.0:
+        return 0.0
+    return mean / std
+
+
+def write_significance(
+    aulc: dict[tuple[str, str, str, int], float],
+    out: Path,
+) -> None:
     try:
         from scipy.stats import wilcoxon  # type: ignore
     except Exception:
@@ -145,23 +285,32 @@ def write_significance(aulc: dict[tuple[str, str, int], float], out: Path) -> No
         return
 
     strategies = sorted({k[1] for k in aulc if k[1] != RANDOM_BASELINE})
-    # Pair each strategy vs random over (dataset, seed).
-    pairs_by_strategy: dict[str, list[tuple[float, float]]] = defaultdict(list)
-    for (ds, strat, seed), val in aulc.items():
+    protocols = sorted({k[2] for k in aulc})
+
+    # Pair each (strategy, protocol) vs random over (dataset, seed).
+    pairs_by_strat_proto: dict[tuple[str, str], list[tuple[float, float, str, int]]] = defaultdict(list)
+    for (ds, strat, proto, seed), val in aulc.items():
         if strat == RANDOM_BASELINE:
             continue
-        base_key = (ds, RANDOM_BASELINE, seed)
+        base_key = (ds, RANDOM_BASELINE, proto, seed)
         if base_key in aulc:
-            pairs_by_strategy[strat].append((val, aulc[base_key]))
+            pairs_by_strat_proto[(strat, proto)].append((val, aulc[base_key], ds, seed))
 
-    n_tests = max(1, len(strategies))
-    test_rows: list[dict[str, Any]] = []
-    for strat in strategies:
-        pairs = pairs_by_strategy.get(strat, [])
+    # Collect raw p-values for BH correction across all (strategy, protocol) combos.
+    combo_order = [(strat, proto) for strat in strategies for proto in protocols
+                   if (strat, proto) in pairs_by_strat_proto]
+    raw_p_values: list[float] = []
+    combo_data: list[dict[str, Any]] = []
+
+    for strat, proto in combo_order:
+        entries = pairs_by_strat_proto[(strat, proto)]
+        pairs = [(v, r) for v, r, _ds, _seed in entries]
         strat_vals = [p[0] for p in pairs]
         rand_vals = [p[1] for p in pairs]
         diffs = [a - b for a, b in pairs]
         mean_lift = sum(diffs) / len(diffs) if diffs else float("nan")
+        cohens_d = _cohens_d_paired(diffs)
+        pct_beat = sum(1 for d in diffs if d > 0) / len(diffs) if diffs else float("nan")
         p_value = float("nan")
         statistic = float("nan")
         note = ""
@@ -174,23 +323,37 @@ def write_significance(aulc: dict[tuple[str, str, int], float], out: Path) -> No
                 note = f"wilcoxon_failed:{exc}"
         else:
             note = f"insufficient_pairs(n_nonzero={len(nonzero)}; need>=6)"
-        test_rows.append(
+        raw_p_values.append(p_value)
+        combo_data.append(
             {
                 "strategy": strat,
+                "protocol": proto,
                 "baseline": RANDOM_BASELINE,
                 "n_pairs": len(pairs),
                 "mean_aulc_lift": round(mean_lift, 5),
                 "wilcoxon_statistic": statistic,
                 "p_value_greater": p_value,
-                "p_value_bonferroni": (min(1.0, p_value * n_tests) if not math.isnan(p_value) else float("nan")),
+                # BH will be filled in below after all raw p-values are collected.
+                "p_value_bh": float("nan"),
+                "cohens_d": round(cohens_d, 5) if not math.isnan(cohens_d) else float("nan"),
+                "pct_seeds_beat_random": round(pct_beat, 4) if not math.isnan(pct_beat) else float("nan"),
                 "note": note,
             }
         )
-    _write_csv(out, test_rows)
+
+    # Apply Benjamini-Hochberg FDR correction.
+    bh_p = _benjamini_hochberg(raw_p_values)
+    for entry, p_bh in zip(combo_data, bh_p):
+        entry["p_value_bh"] = p_bh
+
+    _write_csv(out, combo_data)
     print(f"[significance] wrote {out}")
 
 
-def write_bootstrap_ci(aulc: dict[tuple[str, str, int], float], out: Path) -> None:
+def write_bootstrap_ci(
+    aulc: dict[tuple[str, str, str, int], float],
+    out: Path,
+) -> None:
     try:
         import numpy as np  # type: ignore
     except Exception:
@@ -198,28 +361,33 @@ def write_bootstrap_ci(aulc: dict[tuple[str, str, int], float], out: Path) -> No
         return
 
     strategies = sorted({k[1] for k in aulc if k[1] != RANDOM_BASELINE})
+    protocols = sorted({k[2] for k in aulc})
     rng = np.random.default_rng(_BOOTSTRAP_SEED)
     rows: list[dict[str, Any]] = []
     for strat in strategies:
-        lifts = [
-            val - aulc[(ds, RANDOM_BASELINE, seed)]
-            for (ds, s, seed), val in aulc.items()
-            if s == strat and (ds, RANDOM_BASELINE, seed) in aulc
-        ]
-        if not lifts:
-            continue
-        arr = np.asarray(lifts, dtype=float)
-        means = np.array([rng.choice(arr, size=len(arr), replace=True).mean() for _ in range(_BOOTSTRAP_ITERS)])
-        rows.append(
-            {
-                "strategy": strat,
-                "n": len(lifts),
-                "mean_aulc_lift": round(float(arr.mean()), 5),
-                "ci95_low": round(float(np.percentile(means, 2.5)), 5),
-                "ci95_high": round(float(np.percentile(means, 97.5)), 5),
-                "prob_positive": round(float((means > 0).mean()), 4),
-            }
-        )
+        for proto in protocols:
+            lifts = [
+                val - aulc[(ds, RANDOM_BASELINE, proto, seed)]
+                for (ds, s, p, seed), val in aulc.items()
+                if s == strat and p == proto and (ds, RANDOM_BASELINE, proto, seed) in aulc
+            ]
+            if not lifts:
+                continue
+            arr = np.asarray(lifts, dtype=float)
+            means = np.array(
+                [rng.choice(arr, size=len(arr), replace=True).mean() for _ in range(_BOOTSTRAP_ITERS)]
+            )
+            rows.append(
+                {
+                    "strategy": strat,
+                    "protocol": proto,
+                    "n": len(lifts),
+                    "mean_aulc_lift": round(float(arr.mean()), 5),
+                    "ci95_low": round(float(np.percentile(means, 2.5)), 5),
+                    "ci95_high": round(float(np.percentile(means, 97.5)), 5),
+                    "prob_positive": round(float((means > 0).mean()), 4),
+                }
+            )
     _write_csv(out, rows)
     print(f"[bootstrap] wrote {out}")
 
@@ -237,27 +405,41 @@ def plot_learning_curves(rows: list[dict[str, Any]], out: Path) -> None:
 
     datasets = sorted({r["dataset"] for r in rows})
     strategies = sorted({r["strategy"] for r in rows})
-    fig, axes = plt.subplots(1, len(datasets), figsize=(7 * len(datasets), 5), squeeze=False)
-    for col, ds in enumerate(datasets):
-        ax = axes[0][col]
-        for strat in strategies:
-            by_budget: dict[int, list[float]] = defaultdict(list)
-            for r in rows:
-                if r["dataset"] == ds and r["strategy"] == strat:
-                    by_budget[r["requested_budget"]].append(r["macro_f1"])
-            if not by_budget:
-                continue
-            budgets = sorted(by_budget)
-            means = np.array([np.mean(by_budget[b]) for b in budgets])
-            stds = np.array([np.std(by_budget[b]) for b in budgets])
-            style = dict(linewidth=2.4, color="black", linestyle="--") if strat == RANDOM_BASELINE else dict(linewidth=1.8)
-            ax.plot(budgets, means, marker="o", label=strat, **style)
-            ax.fill_between(budgets, means - stds, means + stds, alpha=0.12)
-        ax.set_title(ds)
-        ax.set_xlabel("labeled budget")
-        ax.set_ylabel("macro-F1")
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
+    protocols = sorted({r.get("protocol", "cold") for r in rows})
+
+    # One column per dataset, one row per protocol.
+    n_rows = len(protocols)
+    n_cols = len(datasets)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(7 * n_cols, 5 * n_rows), squeeze=False)
+    for row_idx, proto in enumerate(protocols):
+        for col, ds in enumerate(datasets):
+            ax = axes[row_idx][col]
+            for strat in strategies:
+                by_budget: dict[int, list[float]] = defaultdict(list)
+                for r in rows:
+                    if (
+                        r["dataset"] == ds
+                        and r["strategy"] == strat
+                        and r.get("protocol", "cold") == proto
+                    ):
+                        by_budget[r["requested_budget"]].append(r["macro_f1"])
+                if not by_budget:
+                    continue
+                budgets = sorted(by_budget)
+                means = np.array([np.mean(by_budget[b]) for b in budgets])
+                stds = np.array([np.std(by_budget[b]) for b in budgets])
+                style = (
+                    dict(linewidth=2.4, color="black", linestyle="--")
+                    if strat == RANDOM_BASELINE
+                    else dict(linewidth=1.8)
+                )
+                ax.plot(budgets, means, marker="o", label=strat, **style)
+                ax.fill_between(budgets, means - stds, means + stds, alpha=0.12)
+            ax.set_title(f"{ds} [{proto}]")
+            ax.set_xlabel("labeled budget")
+            ax.set_ylabel("macro-F1")
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=8)
     fig.suptitle("Active-learning learning curves (mean ± std over seeds; DistilBERT)")
     fig.tight_layout()
     fig.savefig(out, dpi=140)
@@ -291,14 +473,38 @@ def main() -> None:
     plot_learning_curves(rows, input_dir / "learning_curves.png")
 
     # Console headline.
+    stat_path = input_dir / "statistical_tests.csv"
+    # Load BH p-values and Cohen's d from the just-written CSV (if it exists).
+    bh_lookup: dict[tuple[str, str], float] = {}
+    cd_lookup: dict[tuple[str, str], float] = {}
+    if stat_path.exists():
+        with stat_path.open(newline="", encoding="utf-8") as _fh:
+            for _r in csv.DictReader(_fh):
+                _key = (_r.get("strategy", ""), _r.get("protocol", "cold"))
+                try:
+                    bh_lookup[_key] = float(_r.get("p_value_bh", "nan") or "nan")
+                    cd_lookup[_key] = float(_r.get("cohens_d", "nan") or "nan")
+                except ValueError:
+                    pass
+
     print("\n=== AULC lift vs random (mean over dataset x seed) ===")
     strategies = sorted({k[1] for k in aulc if k[1] != RANDOM_BASELINE})
-    for strat in strategies:
-        lifts = [val - aulc[(ds, RANDOM_BASELINE, seed)]
-                 for (ds, s, seed), val in aulc.items()
-                 if s == strat and (ds, RANDOM_BASELINE, seed) in aulc]
-        if lifts:
-            print(f"  {strat:28s} {sum(lifts) / len(lifts):+.4f}")
+    protocols_headline = sorted({k[2] for k in aulc})
+    for proto in protocols_headline:
+        print(f"  -- protocol: {proto} --")
+        for strat in strategies:
+            lifts = [
+                val - aulc[(ds, RANDOM_BASELINE, proto, seed)]
+                for (ds, s, p, seed), val in aulc.items()
+                if s == strat and p == proto and (ds, RANDOM_BASELINE, proto, seed) in aulc
+            ]
+            if lifts:
+                mean_lift = sum(lifts) / len(lifts)
+                p_bh = bh_lookup.get((strat, proto), float("nan"))
+                d = cd_lookup.get((strat, proto), float("nan"))
+                p_bh_str = f"{p_bh:.4f}" if not math.isnan(p_bh) else "n/a"
+                d_str = f"{d:+.3f}" if not math.isnan(d) else "n/a"
+                print(f"    {strat:34s} lift={mean_lift:+.4f}  BH_p={p_bh_str}  d={d_str}")
     summary = {"n_rows": len(rows), "n_curves": len(aulc)}
     (input_dir / "analysis_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
